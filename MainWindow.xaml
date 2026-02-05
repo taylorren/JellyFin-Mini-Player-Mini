@@ -6,13 +6,19 @@
         xmlns:local="clr-namespace:RoundSoundMimic"
         mc:Ignorable="d"
         Title="RoundSound Mimic" Height="893" Width="1325" MinWidth="760" MinHeight="520"
-        Background="#FFFFFF">
+        Background="Transparent"
+        WindowStyle="None"
+        ResizeMode="NoResize"
+        AllowsTransparency="True"
+        MouseRightButtonUp="Window_OnMouseRightButtonUp"
+        PreviewMouseLeftButtonDown="Window_OnPreviewMouseLeftButtonDown"
+        Icon="{DynamicResource AppIcon}">
     <Window.Resources>
         <SolidColorBrush x:Key="AccentBrush" Color="#FF8A2A" />
         <SolidColorBrush x:Key="ProgressBrush" Color="#FFC166" />
         <SolidColorBrush x:Key="EqSpikeBrush" Color="#C66A18" />
         <SolidColorBrush x:Key="RingBackBrush" Color="#D26E1D" />
-        <SolidColorBrush x:Key="PanelBrush" Color="#FFFFFF" />
+        <SolidColorBrush x:Key="PanelBrush" Color="#00FFFFFF" />
         <SolidColorBrush x:Key="PrimaryTextBrush" Color="#F2F2F2" />
         <SolidColorBrush x:Key="SecondaryTextBrush" Color="#D8D8D8" />
         <SolidColorBrush x:Key="MutedTextBrush" Color="#7A7F8A" />
@@ -20,10 +26,27 @@
         <SolidColorBrush x:Key="InnerCircleBrush" Color="#9E9E9E" />
         <SolidColorBrush x:Key="ButtonBorderBrush" Color="#D0D0D0" />
         <SolidColorBrush x:Key="ButtonTextBrush" Color="#1F1F1F" />
+        <Pen x:Key="RingBackPen" Brush="{StaticResource RingBackBrush}" Thickness="2" />
         <Geometry x:Key="PrevIcon">M18,4 L18,20 L8,12 Z M6,4 L6,20 L4,20 L4,4 Z</Geometry>
         <Geometry x:Key="PlayIcon">M6,4 L20,12 L6,20 Z</Geometry>
         <Geometry x:Key="PauseIcon">M6,4 L10,4 L10,20 L6,20 Z M14,4 L18,4 L18,20 L14,20 Z</Geometry>
         <Geometry x:Key="NextIcon">M6,4 L6,20 L16,12 Z M18,4 L18,20 L20,20 L20,4 Z</Geometry>
+        <DrawingImage x:Key="AppIcon">
+            <DrawingImage.Drawing>
+                <DrawingGroup>
+                    <GeometryDrawing Brush="{StaticResource ProgressBrush}">
+                        <GeometryDrawing.Geometry>
+                            <EllipseGeometry Center="12,12" RadiusX="6" RadiusY="6" />
+                        </GeometryDrawing.Geometry>
+                    </GeometryDrawing>
+                    <GeometryDrawing Brush="Transparent" Pen="{StaticResource RingBackPen}">
+                        <GeometryDrawing.Geometry>
+                            <EllipseGeometry Center="12,12" RadiusX="9" RadiusY="9" />
+                        </GeometryDrawing.Geometry>
+                    </GeometryDrawing>
+                </DrawingGroup>
+            </DrawingImage.Drawing>
+        </DrawingImage>
         <Style x:Key="FlatButtonStyle" TargetType="Button">
             <Setter Property="Background" Value="Transparent" />
             <Setter Property="BorderBrush" Value="Transparent" />
@@ -57,9 +80,22 @@
                 </Setter.Value>
             </Setter>
         </Style>
+        <Storyboard x:Key="AlbumArtRotationStoryboard" RepeatBehavior="Forever">
+            <DoubleAnimation Storyboard.TargetName="AlbumArtRotate"
+                             Storyboard.TargetProperty="Angle"
+                             From="0"
+                             To="360"
+                             Duration="0:0:20" />
+        </Storyboard>
     </Window.Resources>
 
-    <Grid Margin="24">
+    <Window.Triggers>
+        <EventTrigger RoutedEvent="Loaded">
+            <BeginStoryboard Storyboard="{StaticResource AlbumArtRotationStoryboard}" />
+        </EventTrigger>
+    </Window.Triggers>
+
+    <Grid Margin="24" Background="Transparent">
         <Grid.RowDefinitions>
             <RowDefinition Height="*" />
             <RowDefinition Height="Auto" />
@@ -90,7 +126,10 @@
                     <Ellipse x:Name="InnerCircle" Width="520" Height="520" Fill="{StaticResource InnerCircleBrush}" Canvas.Left="60" Canvas.Top="60" />
                     <Path x:Name="BandPath" Fill="{StaticResource BandBrush}" />
                     <Grid Canvas.Left="67" Canvas.Top="67" Width="506" Height="506">
-                        <Ellipse>
+                        <Ellipse RenderTransformOrigin="0.5,0.5">
+                            <Ellipse.RenderTransform>
+                                <RotateTransform x:Name="AlbumArtRotate" />
+                            </Ellipse.RenderTransform>
                             <Ellipse.Fill>
                                 <ImageBrush x:Name="AlbumArtBrush" Stretch="UniformToFill" Opacity="0.75" />
                             </Ellipse.Fill>
@@ -147,8 +186,11 @@
             </Grid>
         </Border>
 
-        <Expander Grid.Row="1" Header="Server Configuration" Margin="0,16,0,0" IsExpanded="False">
-            <Border Background="{StaticResource PanelBrush}" CornerRadius="12" Padding="16" Margin="0,8,0,0">
+        <Popup x:Name="ConfigPopup"
+               Placement="MousePoint"
+               StaysOpen="False"
+               AllowsTransparency="True">
+            <Border Background="{StaticResource PanelBrush}" CornerRadius="12" Padding="16">
                 <StackPanel>
                     <Button x:Name="FetchButton" Width="160" Height="32" Margin="0,0,0,12" Click="FetchButton_OnClick">Fetch Now Playing</Button>
                     <TextBlock x:Name="StatusTextBlock"
@@ -180,9 +222,13 @@
                                 Height="30"
                                 Margin="0,0,8,0"
                                 Click="SaveButton_OnClick">Save Config</Button>
+                        <Button x:Name="CloseButton"
+                                Width="70"
+                                Height="30"
+                                Click="CloseButton_OnClick">Close</Button>
                     </StackPanel>
                 </StackPanel>
             </Border>
-        </Expander>
+        </Popup>
     </Grid>
 </Window>

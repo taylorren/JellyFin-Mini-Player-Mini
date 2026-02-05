@@ -6,10 +6,12 @@ using System.Text.Json;
 using System.Threading.Tasks;
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Controls.Primitives;
 using System.Windows.Media;
 using System.Windows.Media.Imaging;
 using System.Windows.Shapes;
 using System.Windows.Threading;
+using System.Windows.Input;
 using NAudio.Dsp;
 using NAudio.Wave;
 
@@ -26,6 +28,7 @@ public partial class MainWindow : Window
     private const int FftM = 11;
     private Canvas? _drawingCanvas;
     private Canvas? _eqCanvas;
+    private Popup? _configPopup;
     private FrameworkElement? _innerCircle;
     private Path? _bandPath;
     private readonly List<Line> _eqSpikes = new();
@@ -52,6 +55,7 @@ public partial class MainWindow : Window
         InitializeFftWindow();
         _drawingCanvas = FindName("DrawingCanvas") as Canvas;
         _eqCanvas = FindName("EqCanvas") as Canvas;
+        _configPopup = FindName("ConfigPopup") as Popup;
         _innerCircle = FindName("InnerCircle") as FrameworkElement;
         _bandPath = FindName("BandPath") as Path;
         if (_drawingCanvas is not null)
@@ -374,11 +378,12 @@ public partial class MainWindow : Window
             ringTop = 0;
         }
 
+        var ringRadius = Math.Min(ringWidth, ringHeight) / 2.0;
         var centerX = ringLeft + ringWidth / 2.0;
         var centerY = ringTop + ringHeight / 2.0;
-        var baseRadius = ringWidth / 2.0 + ProgressRing.StrokeThickness / 2.0 + 4;
-        var minSpike = Math.Max(4, ringWidth * 0.02);
-        var maxSpike = Math.Max(10, ringWidth * 0.08);
+        var baseRadius = ringRadius + ProgressRing.StrokeThickness / 2.0 + 4;
+        var minSpike = Math.Max(3, ringRadius * 0.04);
+        var maxSpike = Math.Max(8, ringRadius * 0.14);
 
         for (var i = 0; i < _eqSpikes.Count; i++)
         {
@@ -550,6 +555,33 @@ public partial class MainWindow : Window
     {
         await SendPlaybackCommandAsync("PlayPause");
         await RefreshAfterCommandAsync();
+    }
+
+    private void Window_OnMouseRightButtonUp(object sender, MouseButtonEventArgs e)
+    {
+        if (_configPopup is null)
+        {
+            return;
+        }
+
+        _configPopup.IsOpen = true;
+        e.Handled = true;
+    }
+
+    private void Window_OnPreviewMouseLeftButtonDown(object sender, MouseButtonEventArgs e)
+    {
+        if (e.ButtonState != MouseButtonState.Pressed)
+        {
+            return;
+        }
+
+        try
+        {
+            DragMove();
+        }
+        catch
+        {
+        }
     }
 
     private void UpdatePlayPauseIcon()
@@ -752,5 +784,10 @@ public partial class MainWindow : Window
     {
         await Task.Delay(300);
         await FetchNowPlayingAsync();
+    }
+
+    private void CloseButton_OnClick(object sender, RoutedEventArgs e)
+    {
+        Close();
     }
 }
