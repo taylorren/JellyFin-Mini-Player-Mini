@@ -1,0 +1,146 @@
+﻿<Window x:Class="RoundSoundMimic.MainWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+        xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+        xmlns:local="clr-namespace:RoundSoundMimic"
+        mc:Ignorable="d"
+        Title="RoundSound Mimic" Height="893" Width="1325" MinWidth="760" MinHeight="520"
+        Background="#FFFFFF">
+    <Window.Resources>
+        <SolidColorBrush x:Key="AccentBrush" Color="#FF8A2A" />
+        <SolidColorBrush x:Key="ProgressBrush" Color="#FFC166" />
+        <SolidColorBrush x:Key="RingBackBrush" Color="#D26E1D" />
+        <SolidColorBrush x:Key="PanelBrush" Color="#FFFFFF" />
+        <SolidColorBrush x:Key="PrimaryTextBrush" Color="#F2F2F2" />
+        <SolidColorBrush x:Key="SecondaryTextBrush" Color="#D8D8D8" />
+        <SolidColorBrush x:Key="MutedTextBrush" Color="#7A7F8A" />
+        <SolidColorBrush x:Key="BandBrush" Color="#B4000000" />
+        <SolidColorBrush x:Key="InnerCircleBrush" Color="#9E9E9E" />
+        <SolidColorBrush x:Key="ButtonBorderBrush" Color="#D0D0D0" />
+        <SolidColorBrush x:Key="ButtonTextBrush" Color="#1F1F1F" />
+        <Style x:Key="FlatButtonStyle" TargetType="Button">
+            <Setter Property="Background" Value="Transparent" />
+            <Setter Property="BorderBrush" Value="Transparent" />
+            <Setter Property="BorderThickness" Value="0" />
+            <Setter Property="Padding" Value="6,2" />
+            <Setter Property="FontSize" Value="14" />
+            <Setter Property="Foreground" Value="{StaticResource ButtonTextBrush}" />
+        </Style>
+    </Window.Resources>
+
+    <Grid Margin="24">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="*" />
+            <RowDefinition Height="Auto" />
+        </Grid.RowDefinitions>
+
+        <Border Background="{StaticResource PanelBrush}" CornerRadius="18" Padding="24">
+            <Grid HorizontalAlignment="Center" VerticalAlignment="Center">
+                <Canvas x:Name="DrawingCanvas" Width="640" Height="640">
+                    <Ellipse Width="600" Height="600" Stroke="{StaticResource RingBackBrush}" StrokeThickness="18" Canvas.Left="20" Canvas.Top="20" />
+                    <Ellipse x:Name="ProgressRing"
+                             Width="600"
+                             Height="600"
+                             Stroke="{StaticResource ProgressBrush}"
+                             StrokeThickness="18"
+                             StrokeStartLineCap="Round"
+                             StrokeEndLineCap="Round"
+                             Canvas.Left="20"
+                             Canvas.Top="20"
+                             RenderTransformOrigin="0.5,0.5">
+                        <Ellipse.RenderTransform>
+                            <RotateTransform Angle="-90" />
+                        </Ellipse.RenderTransform>
+                    </Ellipse>
+                    <Ellipse x:Name="InnerCircle" Width="520" Height="520" Fill="{StaticResource InnerCircleBrush}" Canvas.Left="60" Canvas.Top="60" />
+                    <Path x:Name="BandPath" Fill="{StaticResource BandBrush}" />
+                    <Grid Canvas.Left="67" Canvas.Top="67" Width="506" Height="506">
+                        <Ellipse>
+                            <Ellipse.Fill>
+                                <ImageBrush x:Name="AlbumArtBrush" Stretch="UniformToFill" Opacity="0.75" />
+                            </Ellipse.Fill>
+                        </Ellipse>
+                        <Ellipse Fill="#22000000" RenderTransformOrigin="0.5,0.5" >
+                            <Ellipse.RenderTransform>
+                                <TransformGroup>
+                                    <ScaleTransform/>
+                                    <SkewTransform AngleY="-0.846"/>
+                                    <RotateTransform/>
+                                    <TranslateTransform Y="-3.735"/>
+                                </TransformGroup>
+                            </Ellipse.RenderTransform>
+                        </Ellipse>
+                    </Grid>
+                </Canvas>
+
+                <StackPanel HorizontalAlignment="Center" VerticalAlignment="Center" Width="420">
+                    <TextBlock x:Name="TitleTextBlock"
+                               Text="(no data)"
+                               Foreground="{StaticResource PrimaryTextBrush}"
+                               FontSize="22"
+                               FontWeight="SemiBold"
+                               TextAlignment="Center"
+                               TextWrapping="Wrap" />
+                    <TextBlock x:Name="ArtistTextBlock"
+                               Text=""
+                               Foreground="{StaticResource SecondaryTextBrush}"
+                               FontSize="16"
+                               Margin="0,6,0,0"
+                               TextAlignment="Center"
+                               TextWrapping="Wrap" />
+                    <TextBlock x:Name="AlbumTextBlock"
+                               Text=""
+                               Foreground="{StaticResource SecondaryTextBrush}"
+                               FontSize="14"
+                               Margin="0,8,0,0"
+                               TextAlignment="Center"
+                               TextWrapping="Wrap" />
+                    <StackPanel Orientation="Horizontal" HorizontalAlignment="Center" Margin="0,10,0,0">
+                        <Button x:Name="PrevButton" Style="{StaticResource FlatButtonStyle}" Width="40" Height="28" Margin="0,0,8,0" Click="PrevButton_OnClick">⏮</Button>
+                        <Button x:Name="PlayPauseButton" Style="{StaticResource FlatButtonStyle}" Width="44" Height="28" Margin="0,0,8,0" Click="PlayPauseButton_OnClick">⏯</Button>
+                        <Button x:Name="NextButton" Style="{StaticResource FlatButtonStyle}" Width="40" Height="28" Click="NextButton_OnClick">⏭</Button>
+                    </StackPanel>
+                </StackPanel>
+            </Grid>
+        </Border>
+
+        <Expander Grid.Row="1" Header="Server Configuration" Margin="0,16,0,0" IsExpanded="False">
+            <Border Background="{StaticResource PanelBrush}" CornerRadius="12" Padding="16" Margin="0,8,0,0">
+                <StackPanel>
+                    <Button x:Name="FetchButton" Width="160" Height="32" Margin="0,0,0,12" Click="FetchButton_OnClick">Fetch Now Playing</Button>
+                    <TextBlock x:Name="StatusTextBlock"
+                               Margin="0,0,0,12"
+                               Foreground="{StaticResource MutedTextBrush}"
+                               Text="Idle" />
+                    <TextBlock Text="Jellyfin Server" FontWeight="SemiBold" Foreground="{StaticResource PrimaryTextBrush}" />
+                    <TextBox x:Name="ServerUrlTextBox"
+                             Margin="0,6,0,12"
+                             Height="28"
+                             VerticalContentAlignment="Center"
+                             ToolTip="https://your-server:8096" />
+
+                    <TextBlock Text="API Key" FontWeight="SemiBold" Foreground="{StaticResource PrimaryTextBrush}" />
+                    <TextBox x:Name="ApiKeyTextBox"
+                             Margin="0,6,0,12"
+                             Height="28"
+                             VerticalContentAlignment="Center" />
+
+                    <TextBlock Text="User Id (optional)" FontWeight="SemiBold" Foreground="{StaticResource PrimaryTextBrush}" />
+                    <TextBox x:Name="UserIdTextBox"
+                             Margin="0,6,0,12"
+                             Height="28"
+                             VerticalContentAlignment="Center" />
+
+                    <StackPanel Orientation="Horizontal">
+                        <Button x:Name="SaveButton"
+                                Width="110"
+                                Height="30"
+                                Margin="0,0,8,0"
+                                Click="SaveButton_OnClick">Save Config</Button>
+                    </StackPanel>
+                </StackPanel>
+            </Border>
+        </Expander>
+    </Grid>
+</Window>
