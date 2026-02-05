@@ -10,6 +10,7 @@
     <Window.Resources>
         <SolidColorBrush x:Key="AccentBrush" Color="#FF8A2A" />
         <SolidColorBrush x:Key="ProgressBrush" Color="#FFC166" />
+        <SolidColorBrush x:Key="EqSpikeBrush" Color="#C66A18" />
         <SolidColorBrush x:Key="RingBackBrush" Color="#D26E1D" />
         <SolidColorBrush x:Key="PanelBrush" Color="#FFFFFF" />
         <SolidColorBrush x:Key="PrimaryTextBrush" Color="#F2F2F2" />
@@ -19,13 +20,42 @@
         <SolidColorBrush x:Key="InnerCircleBrush" Color="#9E9E9E" />
         <SolidColorBrush x:Key="ButtonBorderBrush" Color="#D0D0D0" />
         <SolidColorBrush x:Key="ButtonTextBrush" Color="#1F1F1F" />
+        <Geometry x:Key="PrevIcon">M18,4 L18,20 L8,12 Z M6,4 L6,20 L4,20 L4,4 Z</Geometry>
+        <Geometry x:Key="PlayIcon">M6,4 L20,12 L6,20 Z</Geometry>
+        <Geometry x:Key="PauseIcon">M6,4 L10,4 L10,20 L6,20 Z M14,4 L18,4 L18,20 L14,20 Z</Geometry>
+        <Geometry x:Key="NextIcon">M6,4 L6,20 L16,12 Z M18,4 L18,20 L20,20 L20,4 Z</Geometry>
         <Style x:Key="FlatButtonStyle" TargetType="Button">
             <Setter Property="Background" Value="Transparent" />
             <Setter Property="BorderBrush" Value="Transparent" />
             <Setter Property="BorderThickness" Value="0" />
-            <Setter Property="Padding" Value="6,2" />
-            <Setter Property="FontSize" Value="14" />
-            <Setter Property="Foreground" Value="{StaticResource ButtonTextBrush}" />
+            <Setter Property="Padding" Value="8,4" />
+            <Setter Property="FontSize" Value="18" />
+            <Setter Property="Foreground" Value="#FFFFFF" />
+            <Setter Property="FocusVisualStyle" Value="{x:Null}" />
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="Button">
+                        <ContentPresenter x:Name="ContentPresenter"
+                                          HorizontalAlignment="Center"
+                                          VerticalAlignment="Center"
+                                          RecognizesAccessKey="True"
+                                          RenderTransformOrigin="0.5,0.5" />
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsPressed" Value="True">
+                                <Setter TargetName="ContentPresenter" Property="RenderTransform">
+                                    <Setter.Value>
+                                        <ScaleTransform ScaleX="0.92" ScaleY="0.92" />
+                                    </Setter.Value>
+                                </Setter>
+                                <Setter TargetName="ContentPresenter" Property="Opacity" Value="0.7" />
+                            </Trigger>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="ContentPresenter" Property="Opacity" Value="0.85" />
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
         </Style>
     </Window.Resources>
 
@@ -53,6 +83,10 @@
                             <RotateTransform Angle="-90" />
                         </Ellipse.RenderTransform>
                     </Ellipse>
+                    <Canvas x:Name="EqCanvas"
+                            Width="{Binding ActualWidth, ElementName=DrawingCanvas}"
+                            Height="{Binding ActualHeight, ElementName=DrawingCanvas}"
+                            IsHitTestVisible="False" />
                     <Ellipse x:Name="InnerCircle" Width="520" Height="520" Fill="{StaticResource InnerCircleBrush}" Canvas.Left="60" Canvas.Top="60" />
                     <Path x:Name="BandPath" Fill="{StaticResource BandBrush}" />
                     <Grid Canvas.Left="67" Canvas.Top="67" Width="506" Height="506">
@@ -97,9 +131,17 @@
                                TextAlignment="Center"
                                TextWrapping="Wrap" />
                     <StackPanel Orientation="Horizontal" HorizontalAlignment="Center" Margin="0,10,0,0">
-                        <Button x:Name="PrevButton" Style="{StaticResource FlatButtonStyle}" Width="40" Height="28" Margin="0,0,8,0" Click="PrevButton_OnClick">⏮</Button>
-                        <Button x:Name="PlayPauseButton" Style="{StaticResource FlatButtonStyle}" Width="44" Height="28" Margin="0,0,8,0" Click="PlayPauseButton_OnClick">⏯</Button>
-                        <Button x:Name="NextButton" Style="{StaticResource FlatButtonStyle}" Width="40" Height="28" Click="NextButton_OnClick">⏭</Button>
+                        <Button x:Name="PrevButton" Style="{StaticResource FlatButtonStyle}" Width="56" Height="38" Margin="0,0,8,0" Click="PrevButton_OnClick">
+                            <Viewbox Width="20" Height="20">
+                                <Path Data="{StaticResource PrevIcon}" Fill="White" />
+                            </Viewbox>
+                        </Button>
+                        <Button x:Name="PlayPauseButton" Style="{StaticResource FlatButtonStyle}" Width="60" Height="38" Margin="0,0,8,0" Click="PlayPauseButton_OnClick" />
+                        <Button x:Name="NextButton" Style="{StaticResource FlatButtonStyle}" Width="56" Height="38" Click="NextButton_OnClick">
+                            <Viewbox Width="20" Height="20">
+                                <Path Data="{StaticResource NextIcon}" Fill="White" />
+                            </Viewbox>
+                        </Button>
                     </StackPanel>
                 </StackPanel>
             </Grid>

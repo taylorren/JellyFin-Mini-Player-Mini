@@ -8,6 +8,10 @@
     <UseWPF>true</UseWPF>
   </PropertyGroup>
 
+  <ItemGroup>
+    <PackageReference Include="NAudio" Version="2.2.1" />
+  </ItemGroup>
+
   <Target Name="LaunchAfterBuild" AfterTargets="Build" Condition="'$(Configuration)'=='Debug'">
     <PropertyGroup>
       <LaunchExe>$(TargetDir)$(AssemblyName).exe</LaunchExe>

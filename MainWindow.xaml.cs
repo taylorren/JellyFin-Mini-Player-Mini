@@ -10,6 +10,8 @@ using System.Windows.Media;
 using System.Windows.Media.Imaging;
 using System.Windows.Shapes;
 using System.Windows.Threading;
+using NAudio.Dsp;
+using NAudio.Wave;
 
 namespace RoundSoundMimic;
 
@@ -19,25 +21,52 @@ namespace RoundSoundMimic;
 public partial class MainWindow : Window
 {
     private static readonly HttpClient Http = new();
+    private const int EqSpikeCount = 48;
+    private const int FftSize = 2048;
+    private const int FftM = 11;
     private Canvas? _drawingCanvas;
+    private Canvas? _eqCanvas;
     private FrameworkElement? _innerCircle;
     private Path? _bandPath;
+    private readonly List<Line> _eqSpikes = new();
+    private double[] _eqValues = Array.Empty<double>();
+    private double[] _eqTargets = Array.Empty<double>();
+    private double[] _eqSnapshot = new double[EqSpikeCount];
+    private readonly object _eqLock = new();
+    private readonly float[] _fftBuffer = new float[FftSize];
+    private readonly Complex[] _fftComplex = new Complex[FftSize];
+    private readonly double[] _fftMagnitudes = new double[FftSize / 2];
+    private readonly float[] _fftWindow = new float[FftSize];
+    private int _fftPos;
+    private WasapiLoopbackCapture? _capture;
     private AppConfig _config = new();
     private string? _activeSessionId;
     private bool _isPaused;
     private readonly DispatcherTimer _pollTimer;
+    private readonly DispatcherTimer _eqTimer;
     private bool _isFetching;
 
     public MainWindow()
     {
         InitializeComponent();
+        InitializeFftWindow();
         _drawingCanvas = FindName("DrawingCanvas") as Canvas;
+        _eqCanvas = FindName("EqCanvas") as Canvas;
         _innerCircle = FindName("InnerCircle") as FrameworkElement;
         _bandPath = FindName("BandPath") as Path;
         if (_drawingCanvas is not null)
         {
-            _drawingCanvas.Loaded += (_, _) => UpdateBandGeometry();
-            _drawingCanvas.SizeChanged += (_, _) => UpdateBandGeometry();
+            _drawingCanvas.Loaded += (_, _) =>
+            {
+                InitializeEqSpikes();
+                UpdateBandGeometry();
+                UpdateEqGeometry();
+            };
+            _drawingCanvas.SizeChanged += (_, _) =>
+            {
+                UpdateBandGeometry();
+                UpdateEqGeometry();
+            };
         }
 
         if (_innerCircle is not null)
@@ -50,13 +79,325 @@ public partial class MainWindow : Window
             Interval = TimeSpan.FromSeconds(1)
         };
         _pollTimer.Tick += PollTimerOnTick;
+
+        _eqTimer = new DispatcherTimer
+        {
+            Interval = TimeSpan.FromMilliseconds(60)
+        };
+        _eqTimer.Tick += (_, _) => UpdateEqAnimation();
     }
 
     private async void OnLoaded(object sender, RoutedEventArgs e)
     {
         await LoadConfigAsync();
         _pollTimer.Start();
+        InitializeEqSpikes();
+        UpdateEqGeometry();
+        StartAudioCapture();
+        _eqTimer.Start();
         UpdateBandGeometry();
+        UpdatePlayPauseIcon();
+    }
+
+    protected override void OnClosed(EventArgs e)
+    {
+        StopAudioCapture();
+        base.OnClosed(e);
+    }
+
+    private void InitializeFftWindow()
+    {
+        for (var i = 0; i < _fftWindow.Length; i++)
+        {
+            _fftWindow[i] = (float)(0.5 * (1.0 - Math.Cos(2.0 * Math.PI * i / (FftSize - 1))));
+        }
+    }
+
+    private void StartAudioCapture()
+    {
+        if (_capture is not null)
+        {
+            return;
+        }
+
+        try
+        {
+            _capture = new WasapiLoopbackCapture();
+            _capture.DataAvailable += OnAudioDataAvailable;
+            _capture.RecordingStopped += OnAudioRecordingStopped;
+            _capture.StartRecording();
+        }
+        catch
+        {
+            _capture = null;
+        }
+    }
+
+    private void StopAudioCapture()
+    {
+        var capture = _capture;
+        if (capture is null)
+        {
+            return;
+        }
+
+        _capture = null;
+        capture.DataAvailable -= OnAudioDataAvailable;
+        capture.RecordingStopped -= OnAudioRecordingStopped;
+        capture.StopRecording();
+        capture.Dispose();
+    }
+
+    private void OnAudioRecordingStopped(object? sender, StoppedEventArgs e)
+    {
+        if (sender is not WasapiLoopbackCapture capture)
+        {
+            return;
+        }
+
+        capture.DataAvailable -= OnAudioDataAvailable;
+        capture.RecordingStopped -= OnAudioRecordingStopped;
+        capture.Dispose();
+        if (ReferenceEquals(_capture, capture))
+        {
+            _capture = null;
+        }
+    }
+
+    private void OnAudioDataAvailable(object? sender, WaveInEventArgs e)
+    {
+        if (_capture is null)
+        {
+            return;
+        }
+
+        var bytesPerSample = _capture.WaveFormat.BitsPerSample / 8;
+        if (bytesPerSample <= 0)
+        {
+            return;
+        }
+
+        var channelCount = _capture.WaveFormat.Channels;
+        if (channelCount <= 0)
+        {
+            return;
+        }
+
+        var sampleCount = e.BytesRecorded / bytesPerSample;
+        if (sampleCount <= 0)
+        {
+            return;
+        }
+
+        if (_capture.WaveFormat.Encoding == WaveFormatEncoding.IeeeFloat)
+        {
+            var waveBuffer = new WaveBuffer(e.Buffer);
+            var floatBuffer = waveBuffer.FloatBuffer;
+            for (var i = 0; i < sampleCount; i += channelCount)
+            {
+                var sample = 0f;
+                for (var channel = 0; channel < channelCount; channel++)
+                {
+                    sample += floatBuffer[i + channel];
+                }
+
+                AddSample(sample / channelCount);
+            }
+        }
+        else
+        {
+            for (var i = 0; i < e.BytesRecorded; i += bytesPerSample * channelCount)
+            {
+                var sample = 0f;
+                for (var channel = 0; channel < channelCount; channel++)
+                {
+                    var offset = i + channel * bytesPerSample;
+                    sample += BitConverter.ToInt16(e.Buffer, offset) / 32768f;
+                }
+
+                AddSample(sample / channelCount);
+            }
+        }
+    }
+
+    private void AddSample(float sample)
+    {
+        _fftBuffer[_fftPos] = sample;
+        _fftPos++;
+        if (_fftPos < FftSize)
+        {
+            return;
+        }
+
+        for (var i = 0; i < FftSize; i++)
+        {
+            _fftComplex[i].X = _fftBuffer[i] * _fftWindow[i];
+            _fftComplex[i].Y = 0;
+        }
+
+        FastFourierTransform.FFT(true, FftM, _fftComplex);
+        for (var i = 0; i < _fftMagnitudes.Length; i++)
+        {
+            var x = _fftComplex[i].X;
+            var y = _fftComplex[i].Y;
+            _fftMagnitudes[i] = Math.Sqrt(x * x + y * y);
+        }
+
+        UpdateEqTargetsFromFft();
+        _fftPos = 0;
+    }
+
+    private void UpdateEqTargetsFromFft()
+    {
+        var maxBin = _fftMagnitudes.Length - 1;
+        if (maxBin <= 0)
+        {
+            return;
+        }
+
+        var maxMagnitude = 0.0;
+        for (var i = 0; i <= maxBin; i++)
+        {
+            if (_fftMagnitudes[i] > maxMagnitude)
+            {
+                maxMagnitude = _fftMagnitudes[i];
+            }
+        }
+
+        if (maxMagnitude <= 1e-8)
+        {
+            return;
+        }
+
+        lock (_eqLock)
+        {
+            for (var band = 0; band < EqSpikeCount; band++)
+            {
+                var start = (int)Math.Floor(Math.Pow(maxBin, band / (double)EqSpikeCount));
+                var end = (int)Math.Floor(Math.Pow(maxBin, (band + 1) / (double)EqSpikeCount));
+                start = Math.Clamp(start, 1, maxBin);
+                end = Math.Clamp(end, start + 1, maxBin);
+
+                var sum = 0.0;
+                for (var i = start; i < end; i++)
+                {
+                    sum += _fftMagnitudes[i];
+                }
+
+                var avg = sum / (end - start);
+                var normalized = avg / maxMagnitude;
+                var scaled = Math.Pow(normalized, 0.5);
+                _eqTargets[band] = Math.Clamp(scaled, 0, 1);
+            }
+        }
+    }
+
+    private void InitializeEqSpikes()
+    {
+        if (_eqCanvas is null)
+        {
+            return;
+        }
+
+        _eqCanvas.Children.Clear();
+        _eqSpikes.Clear();
+        _eqValues = new double[EqSpikeCount];
+        lock (_eqLock)
+        {
+            _eqTargets = new double[EqSpikeCount];
+            _eqSnapshot = new double[EqSpikeCount];
+        }
+
+        var stroke = (Brush)FindResource("EqSpikeBrush");
+        for (var i = 0; i < EqSpikeCount; i++)
+        {
+            var line = new Line
+            {
+                Stroke = stroke,
+                StrokeThickness = 5,
+                StrokeStartLineCap = PenLineCap.Round,
+                StrokeEndLineCap = PenLineCap.Round
+            };
+            _eqCanvas.Children.Add(line);
+            _eqSpikes.Add(line);
+        }
+    }
+
+    private void UpdateEqAnimation()
+    {
+        if (_eqSpikes.Count == 0)
+        {
+            InitializeEqSpikes();
+        }
+
+        lock (_eqLock)
+        {
+            if (_eqTargets.Length == EqSpikeCount)
+            {
+                Array.Copy(_eqTargets, _eqSnapshot, EqSpikeCount);
+            }
+        }
+
+        for (var i = 0; i < _eqSnapshot.Length; i++)
+        {
+            var current = _eqValues[i];
+            var target = _eqSnapshot[i];
+            _eqValues[i] = current + (target - current) * 0.2;
+        }
+
+        UpdateEqGeometry();
+    }
+
+    private void UpdateEqGeometry()
+    {
+        if (_eqSpikes.Count == 0)
+        {
+            return;
+        }
+
+        var ringWidth = ProgressRing.ActualWidth > 0 ? ProgressRing.ActualWidth : ProgressRing.Width;
+        var ringHeight = ProgressRing.ActualHeight > 0 ? ProgressRing.ActualHeight : ProgressRing.Height;
+        if (ringWidth <= 0 || ringHeight <= 0)
+        {
+            return;
+        }
+
+        var ringLeft = Canvas.GetLeft(ProgressRing);
+        var ringTop = Canvas.GetTop(ProgressRing);
+        if (double.IsNaN(ringLeft))
+        {
+            ringLeft = 0;
+        }
+
+        if (double.IsNaN(ringTop))
+        {
+            ringTop = 0;
+        }
+
+        var centerX = ringLeft + ringWidth / 2.0;
+        var centerY = ringTop + ringHeight / 2.0;
+        var baseRadius = ringWidth / 2.0 + ProgressRing.StrokeThickness / 2.0 + 4;
+        var minSpike = Math.Max(4, ringWidth * 0.02);
+        var maxSpike = Math.Max(10, ringWidth * 0.08);
+
+        for (var i = 0; i < _eqSpikes.Count; i++)
+        {
+            var angle = (Math.PI * 2.0 * i) / _eqSpikes.Count;
+            var sin = Math.Sin(angle);
+            var cos = Math.Cos(angle);
+            var spikeLength = minSpike + _eqValues[i] * (maxSpike - minSpike);
+
+            var x1 = centerX + cos * baseRadius;
+            var y1 = centerY + sin * baseRadius;
+            var x2 = centerX + cos * (baseRadius + spikeLength);
+            var y2 = centerY + sin * (baseRadius + spikeLength);
+
+            var line = _eqSpikes[i];
+            line.X1 = x1;
+            line.Y1 = y1;
+            line.X2 = x2;
+            line.Y2 = y2;
+        }
     }
 
     private void UpdateBandGeometry()
@@ -150,7 +491,7 @@ public partial class MainWindow : Window
             var nowPlaying = session?.NowPlayingItem;
             _activeSessionId = session?.Id;
             _isPaused = session?.PlayState?.IsPaused ?? false;
-            PlayPauseButton.Content = _isPaused ? "▶" : "⏸";
+            UpdatePlayPauseIcon();
 
             if (nowPlaying is null)
             {
@@ -209,6 +550,31 @@ public partial class MainWindow : Window
     {
         await SendPlaybackCommandAsync("PlayPause");
         await RefreshAfterCommandAsync();
+    }
+
+    private void UpdatePlayPauseIcon()
+    {
+        if (PlayPauseButton is null)
+        {
+            return;
+        }
+
+        var iconKey = _isPaused ? "PlayIcon" : "PauseIcon";
+        if (TryFindResource(iconKey) is not Geometry geometry)
+        {
+            return;
+        }
+
+        PlayPauseButton.Content = new Viewbox
+        {
+            Width = 20,
+            Height = 20,
+            Child = new Path
+            {
+                Data = geometry,
+                Fill = Brushes.White
+            }
+        };
     }
 
     private async void NextButton_OnClick(object sender, RoutedEventArgs e)
