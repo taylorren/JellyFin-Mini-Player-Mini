@@ -32,6 +32,7 @@ public partial class MainWindow : Window
     private Popup? _menuPopup;
     private FrameworkElement? _innerCircle;
     private Path? _bandPath;
+    private ImageSource? _defaultIcon;
     private readonly List<Line> _eqSpikes = new();
     private double[] _eqValues = Array.Empty<double>();
     private double[] _eqTargets = Array.Empty<double>();
@@ -62,6 +63,11 @@ public partial class MainWindow : Window
         _menuPopup = FindName("MenuPopup") as Popup;
         _innerCircle = FindName("InnerCircle") as FrameworkElement;
         _bandPath = FindName("BandPath") as Path;
+        _defaultIcon = FindResource("AppIcon") as ImageSource;
+        if (_defaultIcon is not null)
+        {
+            Icon = _defaultIcon;
+        }
         if (_drawingCanvas is not null)
         {
             _drawingCanvas.Loaded += (_, _) =>
@@ -723,6 +729,10 @@ public partial class MainWindow : Window
         if (candidateRequests.Count == 0)
         {
             AlbumArtBrush.ImageSource = null;
+                if (_defaultIcon is not null)
+                {
+                    Icon = _defaultIcon;
+                }
             StatusTextBlock.Text = "No artwork id";
             return;
         }
@@ -749,15 +759,24 @@ public partial class MainWindow : Window
                 image.EndInit();
                 image.Freeze();
                 AlbumArtBrush.ImageSource = image;
+                Icon = image;
                 return;
             }
 
             AlbumArtBrush.ImageSource = null;
+            if (_defaultIcon is not null)
+            {
+                Icon = _defaultIcon;
+            }
             StatusTextBlock.Text = "Artwork not available";
         }
         catch
         {
             AlbumArtBrush.ImageSource = null;
+            if (_defaultIcon is not null)
+            {
+                Icon = _defaultIcon;
+            }
             StatusTextBlock.Text = "Artwork load failed";
             return;
         }
