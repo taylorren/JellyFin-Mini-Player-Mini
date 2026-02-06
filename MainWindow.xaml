@@ -144,7 +144,7 @@
                              Storyboard.TargetProperty="Angle"
                              From="0"
                              To="360"
-                             Duration="0:0:20" />
+                             Duration="0:0:15" />
         </Storyboard>
     </Window.Resources>
 
@@ -210,6 +210,11 @@
                                 <ImageBrush x:Name="AlbumArtBrush" Stretch="UniformToFill" Opacity="0.75" />
                             </Ellipse.Fill>
                         </Ellipse>
+                        <Ellipse Width="48"
+                                 Height="48"
+                                 Fill="Black"
+                                 HorizontalAlignment="Center"
+                                 VerticalAlignment="Center" />
                         <Ellipse Fill="#22000000" RenderTransformOrigin="0.5,0.5" >
                             <Ellipse.RenderTransform>
                                 <TransformGroup>
