@@ -710,6 +710,12 @@ public partial class MainWindow : Window
         Close();
     }
 
+    private void MinimizeButton_OnClick(object sender, RoutedEventArgs e)
+    {
+        WindowState = WindowState.Minimized;
+        Hide();
+    }
+
     private void Window_OnPreviewMouseLeftButtonDown(object sender, MouseButtonEventArgs e)
     {
         if (e.ButtonState != MouseButtonState.Pressed)

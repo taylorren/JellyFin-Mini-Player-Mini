@@ -272,6 +272,7 @@
                 </Border.Effect>
                 <StackPanel>
                     <Button x:Name="OpenConfigButton" Style="{StaticResource PopupButtonStyle}" Width="160" Margin="0,0,0,8" Click="OpenConfigButton_OnClick">Open Config</Button>
+                    <Button x:Name="MinimizeButton" Style="{StaticResource PopupButtonStyle}" Width="160" Margin="0,0,0,8" Click="MinimizeButton_OnClick">Minimize</Button>
                     <Button x:Name="ExitButton" Style="{StaticResource PopupButtonStyle}" Width="160" Click="ExitButton_OnClick">Exit</Button>
                 </StackPanel>
             </Border>
