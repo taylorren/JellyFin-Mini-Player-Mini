@@ -29,6 +29,7 @@ public partial class MainWindow : Window
     private Canvas? _drawingCanvas;
     private Canvas? _eqCanvas;
     private Popup? _configPopup;
+    private Popup? _menuPopup;
     private FrameworkElement? _innerCircle;
     private Path? _bandPath;
     private readonly List<Line> _eqSpikes = new();
@@ -45,6 +46,8 @@ public partial class MainWindow : Window
     private AppConfig _config = new();
     private string? _activeSessionId;
     private bool _isPaused;
+    private long _currentRunTimeTicks;
+    private long _currentPositionTicks;
     private readonly DispatcherTimer _pollTimer;
     private readonly DispatcherTimer _eqTimer;
     private bool _isFetching;
@@ -56,6 +59,7 @@ public partial class MainWindow : Window
         _drawingCanvas = FindName("DrawingCanvas") as Canvas;
         _eqCanvas = FindName("EqCanvas") as Canvas;
         _configPopup = FindName("ConfigPopup") as Popup;
+        _menuPopup = FindName("MenuPopup") as Popup;
         _innerCircle = FindName("InnerCircle") as FrameworkElement;
         _bandPath = FindName("BandPath") as Path;
         if (_drawingCanvas is not null)
@@ -504,6 +508,8 @@ public partial class MainWindow : Window
                 ArtistTextBlock.Text = string.Empty;
                 AlbumTextBlock.Text = string.Empty;
                 AlbumArtBrush.ImageSource = null;
+                _currentRunTimeTicks = 0;
+                _currentPositionTicks = 0;
                 UpdateProgressRing(0);
                 StatusTextBlock.Text = "No active session";
                 return;
@@ -520,6 +526,8 @@ public partial class MainWindow : Window
             TitleTextBlock.Text = title.ToUpperInvariant();
             ArtistTextBlock.Text = artists.ToUpperInvariant();
             AlbumTextBlock.Text = album;
+            _currentRunTimeTicks = nowPlaying.RunTimeTicks ?? 0;
+            _currentPositionTicks = session?.PlayState?.PositionTicks ?? 0;
             await LoadAlbumArtAsync(_config, nowPlaying);
             UpdateProgressRing(GetProgress(session));
             StatusTextBlock.Text = "Updated";
@@ -530,6 +538,8 @@ public partial class MainWindow : Window
             ArtistTextBlock.Text = string.Empty;
             AlbumTextBlock.Text = string.Empty;
             AlbumArtBrush.ImageSource = null;
+            _currentRunTimeTicks = 0;
+            _currentPositionTicks = 0;
             UpdateProgressRing(0);
             StatusTextBlock.Text = ex.Message;
         }
@@ -559,13 +569,28 @@ public partial class MainWindow : Window
 
     private void Window_OnMouseRightButtonUp(object sender, MouseButtonEventArgs e)
     {
+        if (_menuPopup is null)
+        {
+            return;
+        }
+
+        _menuPopup.IsOpen = true;
+        e.Handled = true;
+    }
+
+    private void OpenConfigButton_OnClick(object sender, RoutedEventArgs e)
+    {
         if (_configPopup is null)
         {
             return;
         }
 
         _configPopup.IsOpen = true;
-        e.Handled = true;
+    }
+
+    private void ExitButton_OnClick(object sender, RoutedEventArgs e)
+    {
+        Close();
     }
 
     private void Window_OnPreviewMouseLeftButtonDown(object sender, MouseButtonEventArgs e)
@@ -753,6 +778,7 @@ public partial class MainWindow : Window
 
     private void UpdateProgressRing(double progress)
     {
+        UpdateProgressToolTip();
         var clamped = Math.Clamp(progress, 0, 1);
         if (clamped <= 0.001)
         {
@@ -778,6 +804,38 @@ public partial class MainWindow : Window
             empty / thickness
         };
         ProgressRing.StrokeDashOffset = 0;
+    }
+
+    private void UpdateProgressToolTip()
+    {
+        if (_currentRunTimeTicks <= 0)
+        {
+            ProgressRingToolTip.Content = "No playback";
+            RingBackgroundToolTip.Content = "No playback";
+            return;
+        }
+
+        var total = TimeSpan.FromTicks(_currentRunTimeTicks);
+        var position = TimeSpan.FromTicks(Math.Max(0, _currentPositionTicks));
+        var remaining = total - position;
+        if (remaining < TimeSpan.Zero)
+        {
+            remaining = TimeSpan.Zero;
+        }
+
+        var tooltipText = $"Total: {FormatTime(total)}\nRemaining: {FormatTime(remaining)}";
+        ProgressRingToolTip.Content = tooltipText;
+        RingBackgroundToolTip.Content = tooltipText;
+    }
+
+    private static string FormatTime(TimeSpan time)
+    {
+        if (time.TotalHours >= 1)
+        {
+            return time.ToString("h\\:mm\\:ss");
+        }
+
+        return time.ToString("m\\:ss");
     }
 
     private async Task SendPlaybackCommandAsync(string command)
@@ -838,6 +896,9 @@ public partial class MainWindow : Window
 
     private void CloseButton_OnClick(object sender, RoutedEventArgs e)
     {
-        Close();
+        if (_configPopup is not null)
+        {
+            _configPopup.IsOpen = false;
+        }
     }
 }

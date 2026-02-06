@@ -26,6 +26,12 @@
         <SolidColorBrush x:Key="InnerCircleBrush" Color="#9E9E9E" />
         <SolidColorBrush x:Key="ButtonBorderBrush" Color="#D0D0D0" />
         <SolidColorBrush x:Key="ButtonTextBrush" Color="#1F1F1F" />
+        <SolidColorBrush x:Key="PopupBackgroundBrush" Color="#CC1F1F1F" />
+        <SolidColorBrush x:Key="PopupBorderBrush" Color="#33FFFFFF" />
+        <SolidColorBrush x:Key="PopupHoverBrush" Color="#33FFFFFF" />
+        <SolidColorBrush x:Key="PopupPressedBrush" Color="#55FFFFFF" />
+        <SolidColorBrush x:Key="TooltipBackgroundBrush" Color="#EE1A1A1A" />
+        <SolidColorBrush x:Key="TooltipBorderBrush" Color="#66FFFFFF" />
         <Pen x:Key="RingBackPen" Brush="{StaticResource RingBackBrush}" Thickness="2" />
         <Geometry x:Key="PrevIcon">M18,4 L18,20 L8,12 Z M6,4 L6,20 L4,20 L4,4 Z</Geometry>
         <Geometry x:Key="PlayIcon">M6,4 L20,12 L6,20 Z</Geometry>
@@ -80,6 +86,58 @@
                 </Setter.Value>
             </Setter>
         </Style>
+        <Style x:Key="PopupButtonStyle" TargetType="Button">
+            <Setter Property="Background" Value="{StaticResource PopupBackgroundBrush}" />
+            <Setter Property="BorderBrush" Value="{StaticResource PopupBorderBrush}" />
+            <Setter Property="BorderThickness" Value="1" />
+            <Setter Property="Foreground" Value="{StaticResource PrimaryTextBrush}" />
+            <Setter Property="Padding" Value="10,6" />
+            <Setter Property="FontSize" Value="13" />
+            <Setter Property="FocusVisualStyle" Value="{x:Null}" />
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="Button">
+                        <Border x:Name="ButtonBorder"
+                                Background="{TemplateBinding Background}"
+                                BorderBrush="{TemplateBinding BorderBrush}"
+                                BorderThickness="{TemplateBinding BorderThickness}"
+                                CornerRadius="8">
+                            <ContentPresenter HorizontalAlignment="Center"
+                                              VerticalAlignment="Center"
+                                              RecognizesAccessKey="True" />
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="ButtonBorder" Property="Background" Value="{StaticResource PopupHoverBrush}" />
+                            </Trigger>
+                            <Trigger Property="IsPressed" Value="True">
+                                <Setter TargetName="ButtonBorder" Property="Background" Value="{StaticResource PopupPressedBrush}" />
+                            </Trigger>
+                            <Trigger Property="IsEnabled" Value="False">
+                                <Setter TargetName="ButtonBorder" Property="Opacity" Value="0.6" />
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+        <Style x:Key="PopupTextBoxStyle" TargetType="TextBox">
+            <Setter Property="Background" Value="#22000000" />
+            <Setter Property="BorderBrush" Value="{StaticResource PopupBorderBrush}" />
+            <Setter Property="BorderThickness" Value="1" />
+            <Setter Property="Foreground" Value="{StaticResource PrimaryTextBrush}" />
+            <Setter Property="Padding" Value="8,4" />
+            <Setter Property="FontSize" Value="12" />
+        </Style>
+        <Style x:Key="RingToolTipStyle" TargetType="ToolTip">
+            <Setter Property="Background" Value="{StaticResource TooltipBackgroundBrush}" />
+            <Setter Property="BorderBrush" Value="{StaticResource TooltipBorderBrush}" />
+            <Setter Property="BorderThickness" Value="1" />
+            <Setter Property="Foreground" Value="{StaticResource PrimaryTextBrush}" />
+            <Setter Property="Padding" Value="8,4" />
+            <Setter Property="FontSize" Value="13" />
+            <Setter Property="HasDropShadow" Value="True" />
+        </Style>
         <Storyboard x:Key="AlbumArtRotationStoryboard" RepeatBehavior="Forever">
             <DoubleAnimation Storyboard.TargetName="AlbumArtRotate"
                              Storyboard.TargetProperty="Angle"
@@ -104,7 +162,19 @@
         <Border Background="{StaticResource PanelBrush}" CornerRadius="18" Padding="24">
             <Grid HorizontalAlignment="Center" VerticalAlignment="Center">
                 <Canvas x:Name="DrawingCanvas" Width="640" Height="640">
-                    <Ellipse Width="600" Height="600" Stroke="{StaticResource RingBackBrush}" StrokeThickness="18" Canvas.Left="20" Canvas.Top="20" />
+                    <Ellipse x:Name="RingBackground"
+                             Width="600"
+                             Height="600"
+                             Stroke="{StaticResource RingBackBrush}"
+                             StrokeThickness="18"
+                             ToolTipService.InitialShowDelay="200"
+                             ToolTipService.ShowDuration="60000"
+                             Canvas.Left="20"
+                             Canvas.Top="20">
+                        <Ellipse.ToolTip>
+                            <ToolTip x:Name="RingBackgroundToolTip" Style="{StaticResource RingToolTipStyle}" Content="No playback" />
+                        </Ellipse.ToolTip>
+                    </Ellipse>
                     <Ellipse x:Name="ProgressRing"
                              Width="600"
                              Height="600"
@@ -112,9 +182,14 @@
                              StrokeThickness="18"
                              StrokeStartLineCap="Round"
                              StrokeEndLineCap="Round"
+                             ToolTipService.InitialShowDelay="200"
+                             ToolTipService.ShowDuration="60000"
                              Canvas.Left="20"
                              Canvas.Top="20"
                              RenderTransformOrigin="0.5,0.5">
+                        <Ellipse.ToolTip>
+                            <ToolTip x:Name="ProgressRingToolTip" Style="{StaticResource RingToolTipStyle}" Content="No playback" />
+                        </Ellipse.ToolTip>
                         <Ellipse.RenderTransform>
                             <RotateTransform Angle="-90" />
                         </Ellipse.RenderTransform>
@@ -186,13 +261,31 @@
             </Grid>
         </Border>
 
+        <Popup x:Name="MenuPopup"
+               Placement="MousePoint"
+               StaysOpen="False"
+               AllowsTransparency="True">
+            <Border Background="{StaticResource PopupBackgroundBrush}" BorderBrush="{StaticResource PopupBorderBrush}" BorderThickness="1" CornerRadius="12" Padding="12">
+                <Border.Effect>
+                    <DropShadowEffect BlurRadius="14" ShadowDepth="4" Opacity="0.35" />
+                </Border.Effect>
+                <StackPanel>
+                    <Button x:Name="OpenConfigButton" Style="{StaticResource PopupButtonStyle}" Width="160" Margin="0,0,0,8" Click="OpenConfigButton_OnClick">Open Config</Button>
+                    <Button x:Name="ExitButton" Style="{StaticResource PopupButtonStyle}" Width="160" Click="ExitButton_OnClick">Exit</Button>
+                </StackPanel>
+            </Border>
+        </Popup>
+
         <Popup x:Name="ConfigPopup"
                Placement="MousePoint"
                StaysOpen="False"
                AllowsTransparency="True">
-            <Border Background="{StaticResource PanelBrush}" CornerRadius="12" Padding="16">
+            <Border Background="{StaticResource PopupBackgroundBrush}" BorderBrush="{StaticResource PopupBorderBrush}" BorderThickness="1" CornerRadius="12" Padding="16">
+                <Border.Effect>
+                    <DropShadowEffect BlurRadius="14" ShadowDepth="4" Opacity="0.35" />
+                </Border.Effect>
                 <StackPanel>
-                    <Button x:Name="FetchButton" Width="160" Height="32" Margin="0,0,0,12" Click="FetchButton_OnClick">Fetch Now Playing</Button>
+                    <Button x:Name="FetchButton" Style="{StaticResource PopupButtonStyle}" Width="160" Margin="0,0,0,12" Click="FetchButton_OnClick">Fetch Now Playing</Button>
                     <TextBlock x:Name="StatusTextBlock"
                                Margin="0,0,0,12"
                                Foreground="{StaticResource MutedTextBrush}"
@@ -202,29 +295,32 @@
                              Margin="0,6,0,12"
                              Height="28"
                              VerticalContentAlignment="Center"
+                             Style="{StaticResource PopupTextBoxStyle}"
                              ToolTip="https://your-server:8096" />
 
                     <TextBlock Text="API Key" FontWeight="SemiBold" Foreground="{StaticResource PrimaryTextBrush}" />
                     <TextBox x:Name="ApiKeyTextBox"
                              Margin="0,6,0,12"
                              Height="28"
-                             VerticalContentAlignment="Center" />
+                             VerticalContentAlignment="Center"
+                             Style="{StaticResource PopupTextBoxStyle}" />
 
                     <TextBlock Text="User Id (optional)" FontWeight="SemiBold" Foreground="{StaticResource PrimaryTextBrush}" />
                     <TextBox x:Name="UserIdTextBox"
                              Margin="0,6,0,12"
                              Height="28"
-                             VerticalContentAlignment="Center" />
+                             VerticalContentAlignment="Center"
+                             Style="{StaticResource PopupTextBoxStyle}" />
 
                     <StackPanel Orientation="Horizontal">
                         <Button x:Name="SaveButton"
+                                Style="{StaticResource PopupButtonStyle}"
                                 Width="110"
-                                Height="30"
                                 Margin="0,0,8,0"
                                 Click="SaveButton_OnClick">Save Config</Button>
                         <Button x:Name="CloseButton"
+                                Style="{StaticResource PopupButtonStyle}"
                                 Width="70"
-                                Height="30"
                                 Click="CloseButton_OnClick">Close</Button>
                     </StackPanel>
                 </StackPanel>
