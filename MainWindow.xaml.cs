@@ -2,6 +2,9 @@
 using System.Collections.Generic;
 using System.Linq;
 using System.Net.Http;
+using System.Runtime.InteropServices;
+using Drawing = System.Drawing;
+using Forms = System.Windows.Forms;
 using System.Text.Json;
 using System.Threading.Tasks;
 using System.Windows;
@@ -32,7 +35,10 @@ public partial class MainWindow : Window
     private Popup? _menuPopup;
     private FrameworkElement? _innerCircle;
     private Path? _bandPath;
-    private ImageSource? _defaultIcon;
+    private string? _lastArtworkKey;
+    private Forms.NotifyIcon? _trayIcon;
+    private Drawing.Icon? _trayIconImage;
+    private bool _trayBalloonShown;
     private readonly List<Line> _eqSpikes = new();
     private double[] _eqValues = Array.Empty<double>();
     private double[] _eqTargets = Array.Empty<double>();
@@ -63,11 +69,7 @@ public partial class MainWindow : Window
         _menuPopup = FindName("MenuPopup") as Popup;
         _innerCircle = FindName("InnerCircle") as FrameworkElement;
         _bandPath = FindName("BandPath") as Path;
-        _defaultIcon = FindResource("AppIcon") as ImageSource;
-        if (_defaultIcon is not null)
-        {
-            Icon = _defaultIcon;
-        }
+        InitializeTrayIcon();
         if (_drawingCanvas is not null)
         {
             _drawingCanvas.Loaded += (_, _) =>
@@ -115,9 +117,112 @@ public partial class MainWindow : Window
 
     protected override void OnClosed(EventArgs e)
     {
+        if (_trayIcon is not null)
+        {
+            _trayIcon.Visible = false;
+            _trayIcon.Dispose();
+            _trayIcon = null;
+        }
+
+        _trayIconImage?.Dispose();
+        _trayIconImage = null;
         StopAudioCapture();
         base.OnClosed(e);
     }
+
+    private void InitializeTrayIcon()
+    {
+        var iconImage = FindResource("AppIcon") as ImageSource;
+        if (iconImage is null)
+        {
+            return;
+        }
+
+        _trayIconImage = CreateTrayIcon(iconImage);
+        _trayIcon = new Forms.NotifyIcon
+        {
+            Icon = _trayIconImage,
+            Text = "RoundSound Mimic",
+            Visible = true
+        };
+        _trayIcon.BalloonTipTitle = "RoundSound Mimic";
+
+        var menu = new Forms.ContextMenuStrip();
+        menu.Items.Add("Open", null, (_, _) => ShowFromTray());
+        menu.Items.Add("Exit", null, (_, _) => Close());
+        _trayIcon.ContextMenuStrip = menu;
+        _trayIcon.DoubleClick += (_, _) => ShowFromTray();
+    }
+
+    private static Drawing.Icon? CreateTrayIcon(ImageSource source)
+    {
+        var size = 64;
+        var drawingVisual = new DrawingVisual();
+        using (var context = drawingVisual.RenderOpen())
+        {
+            context.DrawRectangle(new ImageBrush(source) { Stretch = Stretch.UniformToFill }, null, new Rect(0, 0, size, size));
+        }
+
+        var bitmap = new RenderTargetBitmap(size, size, 96, 96, PixelFormats.Pbgra32);
+        bitmap.Render(drawingVisual);
+        bitmap.Freeze();
+
+        using var stream = new System.IO.MemoryStream();
+        var encoder = new PngBitmapEncoder();
+        encoder.Frames.Add(BitmapFrame.Create(bitmap));
+        encoder.Save(stream);
+        stream.Position = 0;
+
+        using var gdiBitmap = new Drawing.Bitmap(stream);
+        var iconHandle = gdiBitmap.GetHicon();
+        var icon = (Drawing.Icon)Drawing.Icon.FromHandle(iconHandle).Clone();
+        DestroyIcon(iconHandle);
+        return icon;
+    }
+
+    private void ShowFromTray()
+    {
+        Dispatcher.Invoke(() =>
+        {
+            Show();
+            WindowState = WindowState.Normal;
+            Activate();
+        });
+    }
+
+    private void UpdateTrayIcon(ImageSource source)
+    {
+        if (_trayIcon is null)
+        {
+            return;
+        }
+
+        _trayIconImage?.Dispose();
+        _trayIconImage = CreateTrayIcon(source);
+        if (_trayIconImage is not null)
+        {
+            _trayIcon.Icon = _trayIconImage;
+        }
+    }
+
+    private void ShowTrayBalloon(string title, string artists)
+    {
+        if (_trayIcon is null)
+        {
+            return;
+        }
+
+        var text = string.IsNullOrWhiteSpace(artists)
+            ? title
+            : $"{title}\n{artists}";
+
+        _trayIcon.BalloonTipText = text;
+        _trayIcon.ShowBalloonTip(_trayBalloonShown ? 1500 : 3000);
+        _trayBalloonShown = true;
+    }
+
+    [DllImport("user32.dll", SetLastError = true)]
+    private static extern bool DestroyIcon(IntPtr hIcon);
 
     private void InitializeFftWindow()
     {
@@ -534,7 +639,13 @@ public partial class MainWindow : Window
             AlbumTextBlock.Text = album;
             _currentRunTimeTicks = nowPlaying.RunTimeTicks ?? 0;
             _currentPositionTicks = session?.PlayState?.PositionTicks ?? 0;
+            var artworkKey = BuildArtworkKey(nowPlaying);
+            var showBalloon = !string.Equals(artworkKey, _lastArtworkKey, StringComparison.Ordinal);
             await LoadAlbumArtAsync(_config, nowPlaying);
+            if (showBalloon)
+            {
+                ShowTrayBalloon(title, artists);
+            }
             UpdateProgressRing(GetProgress(session));
             StatusTextBlock.Text = "Updated";
         }
@@ -729,10 +840,6 @@ public partial class MainWindow : Window
         if (candidateRequests.Count == 0)
         {
             AlbumArtBrush.ImageSource = null;
-                if (_defaultIcon is not null)
-                {
-                    Icon = _defaultIcon;
-                }
             StatusTextBlock.Text = "No artwork id";
             return;
         }
@@ -751,32 +858,29 @@ public partial class MainWindow : Window
                 }
 
                 await using var stream = await response.Content.ReadAsStreamAsync();
+                using var buffer = new System.IO.MemoryStream();
+                await stream.CopyToAsync(buffer);
+                var bytes = buffer.ToArray();
+
                 var image = new BitmapImage();
                 image.BeginInit();
                 image.CacheOption = BitmapCacheOption.OnLoad;
                 image.DecodePixelWidth = 600;
-                image.StreamSource = stream;
+                image.StreamSource = new System.IO.MemoryStream(bytes);
                 image.EndInit();
                 image.Freeze();
                 AlbumArtBrush.ImageSource = image;
-                Icon = image;
+                UpdateTrayIcon(image);
+                _lastArtworkKey = BuildArtworkKey(item);
                 return;
             }
 
             AlbumArtBrush.ImageSource = null;
-            if (_defaultIcon is not null)
-            {
-                Icon = _defaultIcon;
-            }
             StatusTextBlock.Text = "Artwork not available";
         }
         catch
         {
             AlbumArtBrush.ImageSource = null;
-            if (_defaultIcon is not null)
-            {
-                Icon = _defaultIcon;
-            }
             StatusTextBlock.Text = "Artwork load failed";
             return;
         }
@@ -856,6 +960,18 @@ public partial class MainWindow : Window
 
         return time.ToString("m\\:ss");
     }
+
+    private static string BuildArtworkKey(JellyfinNowPlayingItem item)
+    {
+        return string.Join("|", new[]
+        {
+            item.Id ?? string.Empty,
+            item.PrimaryImageTag ?? string.Empty,
+            item.AlbumId ?? string.Empty,
+            item.AlbumPrimaryImageTag ?? string.Empty
+        });
+    }
+
 
     private async Task SendPlaybackCommandAsync(string command)
     {

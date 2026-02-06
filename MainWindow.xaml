@@ -9,6 +9,7 @@
         Background="Transparent"
         WindowStyle="None"
         ResizeMode="NoResize"
+        ShowInTaskbar="False"
         AllowsTransparency="True"
         MouseRightButtonUp="Window_OnMouseRightButtonUp"
         PreviewMouseLeftButtonDown="Window_OnPreviewMouseLeftButtonDown"
