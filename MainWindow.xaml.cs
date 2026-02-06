@@ -575,6 +575,11 @@ public partial class MainWindow : Window
             return;
         }
 
+        if (e.OriginalSource is DependencyObject source && IsInteractiveElement(source))
+        {
+            return;
+        }
+
         try
         {
             DragMove();
@@ -582,6 +587,22 @@ public partial class MainWindow : Window
         catch
         {
         }
+    }
+
+    private static bool IsInteractiveElement(DependencyObject source)
+    {
+        var current = source;
+        while (current is not null)
+        {
+            if (current is ButtonBase or TextBoxBase or Popup)
+            {
+                return true;
+            }
+
+            current = VisualTreeHelper.GetParent(current);
+        }
+
+        return false;
     }
 
     private void UpdatePlayPauseIcon()
@@ -761,14 +782,18 @@ public partial class MainWindow : Window
 
     private async Task SendPlaybackCommandAsync(string command)
     {
-        if (string.IsNullOrWhiteSpace(_activeSessionId))
+        _config.ServerUrl = ServerUrlTextBox.Text.Trim();
+        _config.ApiKey = ApiKeyTextBox.Text.Trim();
+        _config.UserId = UserIdTextBox.Text.Trim();
+        var sessionId = await EnsureActiveSessionIdAsync();
+        if (string.IsNullOrWhiteSpace(sessionId))
         {
             StatusTextBlock.Text = "No active session";
             return;
         }
 
         var baseUrl = _config.ServerUrl.Trim().TrimEnd('/');
-        var url = $"{baseUrl}/Sessions/{_activeSessionId}/Playing/{command}";
+        var url = $"{baseUrl}/Sessions/{sessionId}/Playing/{command}";
 
         using var request = new HttpRequestMessage(HttpMethod.Post, url);
         request.Headers.Add("X-Emby-Token", _config.ApiKey);
@@ -777,6 +802,31 @@ public partial class MainWindow : Window
         if (!response.IsSuccessStatusCode)
         {
             StatusTextBlock.Text = $"Command failed: {(int)response.StatusCode}";
+            return;
+        }
+
+        StatusTextBlock.Text = $"Command sent: {command}";
+    }
+
+    private async Task<string?> EnsureActiveSessionIdAsync()
+    {
+        if (!string.IsNullOrWhiteSpace(_activeSessionId))
+        {
+            return _activeSessionId;
+        }
+
+        try
+        {
+            var session = await FetchActiveSessionAsync(_config);
+            _activeSessionId = session?.Id;
+            _isPaused = session?.PlayState?.IsPaused ?? _isPaused;
+            UpdatePlayPauseIcon();
+            return _activeSessionId;
+        }
+        catch (Exception ex)
+        {
+            StatusTextBlock.Text = ex.Message;
+            return null;
         }
     }
 
