@@ -221,6 +221,35 @@ public partial class MainWindow : Window
         _trayBalloonShown = true;
     }
 
+    private void UpdateTrayNowPlayingText(string title, string artists)
+    {
+        if (_trayIcon is null)
+        {
+            return;
+        }
+
+        var display = string.IsNullOrWhiteSpace(artists) ? title : $"{title} - {artists}";
+        var hint = string.IsNullOrWhiteSpace(display) ? "RoundSound Mimic" : $"Now Playing: {display}";
+        _trayIcon.Text = TruncateTrayText(hint);
+        try
+        {
+            _trayIcon.BalloonTipTitle = "Now Playing";
+            _trayIcon.BalloonTipText = display;
+        }
+        catch { }
+    }
+
+    private static string TruncateTrayText(string text)
+    {
+        const int maxLength = 63;
+        if (string.IsNullOrEmpty(text) || text.Length <= maxLength)
+        {
+            return text;
+        }
+
+        return text.Substring(0, maxLength - 1) + "…";
+    }
+
     [DllImport("user32.dll", SetLastError = true)]
     private static extern bool DestroyIcon(IntPtr hIcon);
 
@@ -622,6 +651,7 @@ public partial class MainWindow : Window
                 _currentRunTimeTicks = 0;
                 _currentPositionTicks = 0;
                 UpdateProgressRing(0);
+                UpdateTrayNowPlayingText("RoundSound Mimic", string.Empty);
                 StatusTextBlock.Text = "No active session";
                 return;
             }
@@ -637,6 +667,7 @@ public partial class MainWindow : Window
             TitleTextBlock.Text = title.ToUpperInvariant();
             ArtistTextBlock.Text = artists.ToUpperInvariant();
             AlbumTextBlock.Text = album;
+            UpdateTrayNowPlayingText(title, artists);
             _currentRunTimeTicks = nowPlaying.RunTimeTicks ?? 0;
             _currentPositionTicks = session?.PlayState?.PositionTicks ?? 0;
             var artworkKey = BuildArtworkKey(nowPlaying);
@@ -658,6 +689,7 @@ public partial class MainWindow : Window
             _currentRunTimeTicks = 0;
             _currentPositionTicks = 0;
             UpdateProgressRing(0);
+            UpdateTrayNowPlayingText("RoundSound Mimic", string.Empty);
             StatusTextBlock.Text = ex.Message;
         }
         finally
