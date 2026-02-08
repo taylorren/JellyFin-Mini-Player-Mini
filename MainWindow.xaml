@@ -207,7 +207,7 @@
                                 <RotateTransform x:Name="AlbumArtRotate" />
                             </Ellipse.RenderTransform>
                             <Ellipse.Fill>
-                                <ImageBrush x:Name="AlbumArtBrush" Stretch="UniformToFill" Opacity="0.75" />
+                                <ImageBrush ImageSource="{Binding AlbumArtSource}" Stretch="UniformToFill" Opacity="0.75" />
                             </Ellipse.Fill>
                         </Ellipse>
                         <Ellipse Width="48"
@@ -230,34 +230,51 @@
 
                 <StackPanel HorizontalAlignment="Center" VerticalAlignment="Center" Width="420">
                     <TextBlock x:Name="TitleTextBlock"
-                               Text="(no data)"
+                               Text="{Binding TitleText}"
                                Foreground="{StaticResource PrimaryTextBrush}"
                                FontSize="22"
                                FontWeight="SemiBold"
                                TextAlignment="Center"
                                TextWrapping="Wrap" />
                     <TextBlock x:Name="ArtistTextBlock"
-                               Text=""
+                               Text="{Binding ArtistText}"
                                Foreground="{StaticResource SecondaryTextBrush}"
                                FontSize="16"
                                Margin="0,6,0,0"
                                TextAlignment="Center"
                                TextWrapping="Wrap" />
                     <TextBlock x:Name="AlbumTextBlock"
-                               Text=""
+                               Text="{Binding AlbumText}"
                                Foreground="{StaticResource SecondaryTextBrush}"
                                FontSize="14"
                                Margin="0,8,0,0"
                                TextAlignment="Center"
                                TextWrapping="Wrap" />
                     <StackPanel Orientation="Horizontal" HorizontalAlignment="Center" Margin="0,10,0,0">
-                        <Button x:Name="PrevButton" Style="{StaticResource FlatButtonStyle}" Width="56" Height="38" Margin="0,0,8,0" Click="PrevButton_OnClick">
+                        <Button x:Name="PrevButton" Style="{StaticResource FlatButtonStyle}" Width="56" Height="38" Margin="0,0,8,0" Command="{Binding PrevCommand}">
                             <Viewbox Width="20" Height="20">
                                 <Path Data="{StaticResource PrevIcon}" Fill="White" />
                             </Viewbox>
                         </Button>
-                        <Button x:Name="PlayPauseButton" Style="{StaticResource FlatButtonStyle}" Width="60" Height="38" Margin="0,0,8,0" Click="PlayPauseButton_OnClick" />
-                        <Button x:Name="NextButton" Style="{StaticResource FlatButtonStyle}" Width="56" Height="38" Click="NextButton_OnClick">
+                        <Button x:Name="PlayPauseButton" Style="{StaticResource FlatButtonStyle}" Width="60" Height="38" Margin="0,0,8,0" Command="{Binding PlayPauseCommand}">
+                            <Button.Content>
+                                <Viewbox Width="20" Height="20">
+                                    <Path Fill="White">
+                                        <Path.Style>
+                                            <Style TargetType="Path">
+                                                <Setter Property="Data" Value="{StaticResource PauseIcon}" />
+                                                <Style.Triggers>
+                                                    <DataTrigger Binding="{Binding IsPaused}" Value="True">
+                                                        <Setter Property="Data" Value="{StaticResource PlayIcon}" />
+                                                    </DataTrigger>
+                                                </Style.Triggers>
+                                            </Style>
+                                        </Path.Style>
+                                    </Path>
+                                </Viewbox>
+                            </Button.Content>
+                        </Button>
+                        <Button x:Name="NextButton" Style="{StaticResource FlatButtonStyle}" Width="56" Height="38" Command="{Binding NextCommand}">
                             <Viewbox Width="20" Height="20">
                                 <Path Data="{StaticResource NextIcon}" Fill="White" />
                             </Viewbox>
@@ -292,17 +309,18 @@
                     <DropShadowEffect BlurRadius="14" ShadowDepth="4" Opacity="0.35" />
                 </Border.Effect>
                 <StackPanel>
-                    <Button x:Name="FetchButton" Style="{StaticResource PopupButtonStyle}" Width="160" Margin="0,0,0,12" Click="FetchButton_OnClick">Fetch Now Playing</Button>
+                    <Button x:Name="FetchButton" Style="{StaticResource PopupButtonStyle}" Width="160" Margin="0,0,0,12" Command="{Binding FetchCommand}">Fetch Now Playing</Button>
                     <TextBlock x:Name="StatusTextBlock"
                                Margin="0,0,0,12"
                                Foreground="{StaticResource MutedTextBrush}"
-                               Text="Idle" />
+                               Text="{Binding StatusText}" />
                     <TextBlock Text="Jellyfin Server" FontWeight="SemiBold" Foreground="{StaticResource PrimaryTextBrush}" />
                     <TextBox x:Name="ServerUrlTextBox"
                              Margin="0,6,0,12"
                              Height="28"
                              VerticalContentAlignment="Center"
                              Style="{StaticResource PopupTextBoxStyle}"
+                             Text="{Binding ServerUrlText, Mode=TwoWay}"
                              ToolTip="https://your-server:8096" />
 
                     <TextBlock Text="API Key" FontWeight="SemiBold" Foreground="{StaticResource PrimaryTextBrush}" />
@@ -310,25 +328,27 @@
                              Margin="0,6,0,12"
                              Height="28"
                              VerticalContentAlignment="Center"
-                             Style="{StaticResource PopupTextBoxStyle}" />
+                             Style="{StaticResource PopupTextBoxStyle}"
+                             Text="{Binding ApiKeyText, Mode=TwoWay}" />
 
                     <TextBlock Text="User Id (optional)" FontWeight="SemiBold" Foreground="{StaticResource PrimaryTextBrush}" />
                     <TextBox x:Name="UserIdTextBox"
                              Margin="0,6,0,12"
                              Height="28"
                              VerticalContentAlignment="Center"
-                             Style="{StaticResource PopupTextBoxStyle}" />
+                             Style="{StaticResource PopupTextBoxStyle}"
+                             Text="{Binding UserIdText, Mode=TwoWay}" />
 
                     <StackPanel Orientation="Horizontal">
                         <Button x:Name="SaveButton"
                                 Style="{StaticResource PopupButtonStyle}"
                                 Width="110"
                                 Margin="0,0,8,0"
-                                Click="SaveButton_OnClick">Save Config</Button>
+                                Command="{Binding SaveConfigCommand}">Save Config</Button>
                         <Button x:Name="CloseButton"
                                 Style="{StaticResource PopupButtonStyle}"
                                 Width="70"
-                                Click="CloseButton_OnClick">Close</Button>
+                                Command="{Binding CloseConfigCommand}">Close</Button>
                     </StackPanel>
                 </StackPanel>
             </Border>

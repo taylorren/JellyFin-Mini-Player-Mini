@@ -7,5 +7,6 @@ namespace RoundSoundMimic.Services
         Task<JellyfinSession?> FetchActiveSessionAsync(AppConfig config);
         Task<byte[]?> GetArtworkBytesAsync(AppConfig config, JellyfinNowPlayingItem item);
         Task<bool> SendPlaybackCommandAsync(AppConfig config, string command, string sessionId);
+        Task<JellyfinSession?> EnsureActiveSessionIdAsync(AppConfig config, string? activeSessionId);
     }
 }

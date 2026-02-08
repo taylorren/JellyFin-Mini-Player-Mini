@@ -1,56 +1,31 @@
 using System;
 using System.Collections.Generic;
 using System.ComponentModel;
-using System.Drawing;
-using System.Linq;
 using System.Net.Http;
 using System.Runtime.CompilerServices;
-using System.Runtime.InteropServices;
 using System.Text.Json;
 using System.Threading.Tasks;
 using System.Windows;
-using System.Windows.Controls;
-using System.Windows.Controls.Primitives;
-using System.Windows.Forms;
 using System.Windows.Input;
 using System.Windows.Media;
 using System.Windows.Media.Imaging;
-using System.Windows.Shapes;
 using System.Windows.Threading;
-using NAudio.Dsp;
-using NAudio.Wave;
 using System.Windows.Data;
+using System.Windows.Controls;
+using System.Windows.Media.Effects;
+using System.Windows.Shapes;
 
 namespace RoundSoundMimic;
 
 public class MainViewModel : INotifyPropertyChanged
 {
     private readonly RoundSoundMimic.Services.IJellyfinService _jellyfinService;
-    private const int EqSpikeCount = 48;
-    private const int FftSize = 2048;
-    private const int FftM = 11;
+    private readonly RoundSoundMimic.Services.ITrayIconService _trayIconService;
     private string? _lastArtworkKey;
-    private NotifyIcon? _trayIcon;
-    private Icon? _trayIconImage;
-    private bool _trayBalloonShown;
-    private readonly List<Line> _eqSpikes = new();
-    private double[] _eqValues = Array.Empty<double>();
-    private double[] _eqTargets = Array.Empty<double>();
-    private double[] _eqSnapshot = new double[EqSpikeCount];
-    private readonly object _eqLock = new();
-    private readonly float[] _fftBuffer = new float[FftSize];
-    private readonly Complex[] _fftComplex = new Complex[FftSize];
-    private readonly double[] _fftMagnitudes = new double[FftSize / 2];
-    private readonly float[] _fftWindow = new float[FftSize];
-    private int _fftPos;
-    private WasapiLoopbackCapture? _capture;
     private AppConfig _config = new();
     private string? _activeSessionId;
-    private bool _isPaused;
     private long _currentRunTimeTicks;
     private long _currentPositionTicks;
-    private readonly DispatcherTimer _pollTimer;
-    private readonly DispatcherTimer _eqTimer;
     private bool _isFetching;
     private DateTime _lastPlaybackSeenUtc = DateTime.MinValue;
 
@@ -68,6 +43,7 @@ public class MainViewModel : INotifyPropertyChanged
     private bool _isPrevEnabled = true;
     private bool _isNextEnabled = true;
     private string _losslessIndicator = "";
+    private bool _isPaused = false;
 
     public string TitleText
     {
@@ -147,6 +123,12 @@ public class MainViewModel : INotifyPropertyChanged
         set => SetProperty(ref _losslessIndicator, value);
     }
 
+    public bool IsPaused
+    {
+        get => _isPaused;
+        set => SetProperty(ref _isPaused, value);
+    }
+
     // Helper to update the view element when using code-behind view
     private void UpdateLosslessTextBlock(string text)
     {
@@ -213,40 +195,21 @@ public class MainViewModel : INotifyPropertyChanged
     public ICommand SaveConfigCommand { get; }
     public ICommand CloseConfigCommand { get; }
 
-    public MainViewModel(RoundSoundMimic.Services.IJellyfinService jellyfinService)
+    public MainViewModel(RoundSoundMimic.Services.IJellyfinService jellyfinService, RoundSoundMimic.Services.ITrayIconService trayIconService)
     {
         _jellyfinService = jellyfinService ?? throw new ArgumentNullException(nameof(jellyfinService));
-        try
-        {
-            InitializeFftWindow();
+        _trayIconService = trayIconService ?? throw new ArgumentNullException(nameof(trayIconService));
 
-            PrevCommand = new RelayCommand(PrevExecute);
-            PlayPauseCommand = new RelayCommand(PlayPauseExecute);
-            NextCommand = new RelayCommand(NextExecute);
-            OpenConfigCommand = new RelayCommand(OpenConfigExecute);
-            MinimizeCommand = new RelayCommand(MinimizeExecute);
-            ExitCommand = new RelayCommand(ExitExecute);
-            FetchCommand = new RelayCommand(FetchExecute);
-            SaveConfigCommand = new RelayCommand(SaveConfigExecute);
-            CloseConfigCommand = new RelayCommand(CloseConfigExecute);
+        PrevCommand = new RelayCommand(PrevExecute);
+        PlayPauseCommand = new RelayCommand(PlayPauseExecute);
+        NextCommand = new RelayCommand(NextExecute);
+        OpenConfigCommand = new RelayCommand(OpenConfigExecute);
+        MinimizeCommand = new RelayCommand(MinimizeExecute);
+        ExitCommand = new RelayCommand(ExitExecute);
+        FetchCommand = new RelayCommand(FetchExecute);
+        SaveConfigCommand = new RelayCommand(SaveConfigExecute);
+        CloseConfigCommand = new RelayCommand(CloseConfigExecute);
 
-            _pollTimer = new DispatcherTimer
-            {
-                Interval = TimeSpan.FromSeconds(1)
-            };
-            _pollTimer.Tick += PollTimerOnTick;
-
-            _eqTimer = new DispatcherTimer
-            {
-                Interval = TimeSpan.FromMilliseconds(60)
-            };
-            _eqTimer.Tick += (_, _) => UpdateEqAnimation();
-        }
-        catch (Exception ex)
-        {
-            System.Windows.MessageBox.Show($"Error in ViewModel constructor: {ex.Message}\n{ex.StackTrace}", "ViewModel Error", MessageBoxButton.OK, MessageBoxImage.Error);
-            throw;
-        }
     }
 
     public event PropertyChangedEventHandler? PropertyChanged;
@@ -265,37 +228,37 @@ public class MainViewModel : INotifyPropertyChanged
     }
 
     // Command methods
-    private async void PrevExecute()
+    public async void PrevExecute()
     {
         await SendPlaybackCommandAsync("PreviousTrack");
         await RefreshAfterCommandAsync();
     }
 
-    private async void PlayPauseExecute()
+    public async void PlayPauseExecute()
     {
         await SendPlaybackCommandAsync("PlayPause");
         await RefreshAfterCommandAsync();
     }
 
-    private async void NextExecute()
+    public async void NextExecute()
     {
         await SendPlaybackCommandAsync("NextTrack");
         await RefreshAfterCommandAsync();
     }
 
-    private void OpenConfigExecute()
+    public void OpenConfigExecute()
     {
         // This needs to be handled in the View, as it opens a popup
         // For now, we'll assume the View handles it via event
     }
 
-    private void MinimizeExecute()
+    public void MinimizeExecute()
     {
         System.Windows.Application.Current.MainWindow.WindowState = WindowState.Minimized;
         System.Windows.Application.Current.MainWindow.Hide();
     }
 
-    private void ExitExecute()
+    public void ExitExecute()
     {
         try
         {
@@ -305,12 +268,12 @@ public class MainViewModel : INotifyPropertyChanged
         System.Windows.Application.Current.Shutdown();
     }
 
-    private async void FetchExecute()
+    public async void FetchExecute()
     {
         await FetchNowPlayingAsync();
     }
 
-    private async void SaveConfigExecute()
+    public async Task SaveConfigAsync()
     {
         _config.ServerUrl = ServerUrlText.Trim();
         _config.ApiKey = ApiKeyText.Trim();
@@ -319,356 +282,19 @@ public class MainViewModel : INotifyPropertyChanged
         await _config.SaveAsync();
         StatusText = "Config saved";
     }
+    
+    private async void SaveConfigExecute()
+    {
+        await SaveConfigAsync();
+    }
 
-    private void CloseConfigExecute()
+    public void CloseConfigExecute()
     {
         // This needs to be handled in the View, as it closes a popup
+        // For now, we'll just leave this as a placeholder
+        // The actual closing of the popup will be handled in the view
     }
 
-    // Initialization methods
-    private void InitializeFftWindow()
-    {
-        for (var i = 0; i < _fftWindow.Length; i++)
-        {
-            _fftWindow[i] = (float)(0.5 * (1.0 - Math.Cos(2.0 * Math.PI * i / (FftSize - 1))));
-        }
-    }
-
-    private void InitializeTrayIcon()
-    {
-        ImageSource? iconImage = null;
-        try
-        {
-            var appRes = System.Windows.Application.Current?.Resources;
-            if (appRes is not null && appRes.Contains("AppIcon") && appRes["AppIcon"] is ImageSource img)
-            {
-                iconImage = img;
-            }
-        }
-        catch { }
-
-        if (iconImage is null)
-        {
-            return;
-        }
-
-        _trayIconImage = CreateTrayIcon(iconImage);
-        _trayIcon = new NotifyIcon
-        {
-            Icon = _trayIconImage,
-            Text = "RoundSound Mimic",
-            Visible = true
-        };
-        _trayIcon.BalloonTipTitle = "RoundSound Mimic";
-
-        var menu = new ContextMenuStrip();
-        menu.Items.Add("Open", null, (_, _) => ShowFromTray());
-        menu.Items.Add("Exit", null, (_, _) => ExitExecute());
-        _trayIcon.ContextMenuStrip = menu;
-        _trayIcon.DoubleClick += (_, _) => ShowFromTray();
-    }
-
-    private static Icon? CreateTrayIcon(ImageSource source)
-    {
-        var size = 64;
-        var drawingVisual = new DrawingVisual();
-        using (var context = drawingVisual.RenderOpen())
-        {
-            context.DrawRectangle(new ImageBrush(source) { Stretch = Stretch.UniformToFill }, null, new Rect(0, 0, size, size));
-        }
-
-        var bitmap = new RenderTargetBitmap(size, size, 96, 96, PixelFormats.Pbgra32);
-        bitmap.Render(drawingVisual);
-        bitmap.Freeze();
-
-        using var stream = new System.IO.MemoryStream();
-        var encoder = new PngBitmapEncoder();
-        encoder.Frames.Add(BitmapFrame.Create(bitmap));
-        encoder.Save(stream);
-        stream.Position = 0;
-
-        using var gdiBitmap = new System.Drawing.Bitmap(stream);
-        var iconHandle = gdiBitmap.GetHicon();
-        var icon = (System.Drawing.Icon)System.Drawing.Icon.FromHandle(iconHandle).Clone();
-        DestroyIcon(iconHandle);
-        return icon;
-    }
-
-    private void ShowFromTray()
-    {
-        System.Windows.Application.Current.Dispatcher.Invoke(() =>
-        {
-            var window = System.Windows.Application.Current.MainWindow;
-            if (window != null)
-            {
-                window.Show();
-                window.WindowState = WindowState.Normal;
-                window.Activate();
-            }
-        });
-    }
-
-    private void UpdateTrayIcon(ImageSource source)
-    {
-        if (_trayIcon is null)
-        {
-            return;
-        }
-
-        _trayIconImage?.Dispose();
-        _trayIconImage = CreateTrayIcon(source);
-        if (_trayIconImage is not null)
-        {
-            _trayIcon.Icon = _trayIconImage;
-        }
-    }
-
-    private void ShowTrayBalloon(string title, string artists)
-    {
-        if (_trayIcon is null)
-        {
-            return;
-        }
-
-        var text = string.IsNullOrWhiteSpace(artists)
-            ? title
-            : $"{title}\n{artists}";
-
-        _trayIcon.BalloonTipText = text;
-        _trayIcon.ShowBalloonTip(_trayBalloonShown ? 1500 : 3000);
-        _trayBalloonShown = true;
-    }
-
-    private void UpdateTrayNowPlayingText(string title, string artists)
-    {
-        if (_trayIcon is null)
-        {
-            return;
-        }
-        var display = string.IsNullOrWhiteSpace(artists) ? title : $"{title} - {artists}";
-        var hint = string.IsNullOrWhiteSpace(display) ? "RoundSound Mimic" : $"Now Playing: {display}";
-        _trayIcon.Text = TruncateTrayText(hint);
-        try
-        {
-            _trayIcon.BalloonTipTitle = "Now Playing";
-            _trayIcon.BalloonTipText = display;
-        }
-        catch { }
-    }
-
-    private static string TruncateTrayText(string text)
-    {
-        const int maxLength = 63;
-        if (string.IsNullOrEmpty(text) || text.Length <= maxLength)
-        {
-            return text;
-        }
-
-        return text.Substring(0, maxLength - 1) + "…";
-    }
-
-    [DllImport("user32.dll", SetLastError = true)]
-    private static extern bool DestroyIcon(IntPtr hIcon);
-
-    // Audio capture methods
-    private void StartAudioCapture()
-    {
-        if (_capture is not null)
-        {
-            return;
-        }
-
-        try
-        {
-            _capture = new WasapiLoopbackCapture();
-            _capture.DataAvailable += OnAudioDataAvailable;
-            _capture.RecordingStopped += OnAudioRecordingStopped;
-            _capture.StartRecording();
-        }
-        catch
-        {
-            _capture = null;
-        }
-    }
-
-    private void StopAudioCapture()
-    {
-        var capture = _capture;
-        if (capture is null)
-        {
-            return;
-        }
-
-        _capture = null;
-        capture.DataAvailable -= OnAudioDataAvailable;
-        capture.RecordingStopped -= OnAudioRecordingStopped;
-        capture.StopRecording();
-        capture.Dispose();
-    }
-
-    private void OnAudioRecordingStopped(object? sender, StoppedEventArgs e)
-    {
-        if (sender is not WasapiLoopbackCapture capture)
-        {
-            return;
-        }
-
-        capture.DataAvailable -= OnAudioDataAvailable;
-        capture.RecordingStopped -= OnAudioRecordingStopped;
-        capture.Dispose();
-        if (ReferenceEquals(_capture, capture))
-        {
-            _capture = null;
-        }
-    }
-
-    private void OnAudioDataAvailable(object? sender, WaveInEventArgs e)
-    {
-        if (_capture is null)
-        {
-            return;
-        }
-
-        var bytesPerSample = _capture.WaveFormat.BitsPerSample / 8;
-        if (bytesPerSample <= 0)
-        {
-            return;
-        }
-
-        var channelCount = _capture.WaveFormat.Channels;
-        if (channelCount <= 0)
-        {
-            return;
-        }
-
-        var sampleCount = e.BytesRecorded / bytesPerSample;
-        if (sampleCount <= 0)
-        {
-            return;
-        }
-
-        if (_capture.WaveFormat.Encoding == WaveFormatEncoding.IeeeFloat)
-        {
-            var waveBuffer = new WaveBuffer(e.Buffer);
-            var floatBuffer = waveBuffer.FloatBuffer;
-            for (var i = 0; i < sampleCount; i += channelCount)
-            {
-                var sample = 0f;
-                for (var channel = 0; channel < channelCount; channel++)
-                {
-                    sample += floatBuffer[i + channel];
-                }
-
-                AddSample(sample / channelCount);
-            }
-        }
-        else
-        {
-            for (var i = 0; i < e.BytesRecorded; i += bytesPerSample * channelCount)
-            {
-                var sample = 0f;
-                for (var channel = 0; channel < channelCount; channel++)
-                {
-                    var offset = i + channel * bytesPerSample;
-                    sample += BitConverter.ToInt16(e.Buffer, offset) / 32768f;
-                }
-
-                AddSample(sample / channelCount);
-            }
-        }
-    }
-
-    private void AddSample(float sample)
-    {
-        _fftBuffer[_fftPos] = sample;
-        _fftPos++;
-        if (_fftPos < FftSize)
-        {
-            return;
-        }
-
-        for (var i = 0; i < FftSize; i++)
-        {
-            _fftComplex[i].X = _fftBuffer[i] * _fftWindow[i];
-            _fftComplex[i].Y = 0;
-        }
-
-        FastFourierTransform.FFT(true, FftM, _fftComplex);
-        for (var i = 0; i < _fftMagnitudes.Length; i++)
-        {
-            var x = _fftComplex[i].X;
-            var y = _fftComplex[i].Y;
-            _fftMagnitudes[i] = Math.Sqrt(x * x + y * y);
-        }
-
-        UpdateEqTargetsFromFft();
-        _fftPos = 0;
-    }
-
-    private void UpdateEqTargetsFromFft()
-    {
-        var maxBin = _fftMagnitudes.Length - 1;
-        if (maxBin <= 0)
-        {
-            return;
-        }
-
-        var maxMagnitude = 0.0;
-        for (var i = 0; i <= maxBin; i++)
-        {
-            if (_fftMagnitudes[i] > maxMagnitude)
-            {
-                maxMagnitude = _fftMagnitudes[i];
-            }
-        }
-
-        if (maxMagnitude <= 1e-8)
-        {
-            return;
-        }
-
-        lock (_eqLock)
-        {
-            for (var band = 0; band < EqSpikeCount; band++)
-            {
-                var start = (int)Math.Floor(Math.Pow(maxBin, band / (double)EqSpikeCount));
-                var end = (int)Math.Floor(Math.Pow(maxBin, (band + 1) / (double)EqSpikeCount));
-                start = Math.Clamp(start, 1, maxBin);
-                end = Math.Clamp(end, start + 1, maxBin);
-
-                var sum = 0.0;
-                for (var i = start; i < end; i++)
-                {
-                    sum += _fftMagnitudes[i];
-                }
-
-                var avg = sum / (end - start);
-                var normalized = avg / maxMagnitude;
-                var scaled = Math.Pow(normalized, 0.5);
-                _eqTargets[band] = Math.Clamp(scaled, 0, 1);
-            }
-        }
-    }
-
-    private void UpdateEqAnimation()
-    {
-        lock (_eqLock)
-        {
-            if (_eqTargets.Length == EqSpikeCount)
-            {
-                Array.Copy(_eqTargets, _eqSnapshot, EqSpikeCount);
-            }
-        }
-
-        for (var i = 0; i < _eqSnapshot.Length; i++)
-        {
-            var current = _eqValues[i];
-            var target = _eqSnapshot[i];
-            _eqValues[i] = current + (target - current) * 0.2;
-        }
-
-        // Note: EQ geometry update will be handled in View or via events
-    }
 
     // Config and fetching methods
     public async Task LoadConfigAsync()
@@ -701,7 +327,7 @@ public class MainViewModel : INotifyPropertyChanged
             var session = await FetchActiveSessionAsync(_config);
             var nowPlaying = session?.NowPlayingItem;
             _activeSessionId = session?.Id;
-            _isPaused = session?.PlayState?.IsPaused ?? false;
+            IsPaused = session?.PlayState?.IsPaused ?? false;
             UpdatePlayPauseIcon();
 
             if (nowPlaying is null)
@@ -779,14 +405,10 @@ public class MainViewModel : INotifyPropertyChanged
         }
     }
 
-    private async void PollTimerOnTick(object? sender, EventArgs e)
-    {
-        await FetchNowPlayingAsync();
-    }
 
     private void UpdatePlayPauseIcon()
     {
-        var iconKey = _isPaused ? "PlayIcon" : "PauseIcon";
+        var iconKey = IsPaused ? "PlayIcon" : "PauseIcon";
         if (System.Windows.Application.Current.TryFindResource(iconKey) is not Geometry geometry)
         {
             return;
@@ -923,6 +545,22 @@ public class MainViewModel : INotifyPropertyChanged
         });
     }
 
+    // Tray icon methods - delegate to service
+    private void UpdateTrayIcon(ImageSource source)
+    {
+        _trayIconService.UpdateTrayIcon(source);
+    }
+
+    private void ShowTrayBalloon(string title, string artists)
+    {
+        _trayIconService.ShowTrayBalloon(title, artists);
+    }
+
+    private void UpdateTrayNowPlayingText(string title, string artists)
+    {
+        _trayIconService.UpdateTrayNowPlayingText(title, artists);
+    }
+
     private async Task SendPlaybackCommandAsync(string command)
     {
         _config.ServerUrl = ServerUrlText.Trim();
@@ -953,7 +591,7 @@ public class MainViewModel : INotifyPropertyChanged
         {
             var session = await FetchActiveSessionAsync(_config);
             _activeSessionId = session?.Id;
-            _isPaused = session?.PlayState?.IsPaused ?? _isPaused;
+            IsPaused = session?.PlayState?.IsPaused ?? IsPaused;
             UpdatePlayPauseIcon();
             return _activeSessionId;
         }
@@ -982,41 +620,6 @@ public class MainViewModel : INotifyPropertyChanged
 
         try
         {
-            InitializeTrayIcon();
-        }
-        catch (Exception ex)
-        {
-            TryLog("OnLoaded_InitializeTrayIcon", ex);
-        }
-
-        try
-        {
-            _pollTimer.Start();
-        }
-        catch (Exception ex)
-        {
-            TryLog("OnLoaded_PollTimerStart", ex);
-        }
-
-        try
-        {
-            StartAudioCapture();
-        }
-        catch (Exception ex)
-        {
-            TryLog("OnLoaded_StartAudioCapture", ex);
-        }
-
-        try
-        {
-            _eqTimer.Start();
-        }
-        catch (Exception ex)
-        {
-            TryLog("OnLoaded_EqTimerStart", ex);
-        }
-        try
-        {
             var dbgPath2 = System.IO.Path.Combine(System.IO.Path.GetTempPath(), "RoundSoundMimic_startup_debug.log");
             System.IO.File.AppendAllText(dbgPath2, DateTime.UtcNow.ToString("o") + " MainViewModel.OnLoaded: complete\n");
         }
@@ -1025,16 +628,7 @@ public class MainViewModel : INotifyPropertyChanged
 
     public void OnClosed()
     {
-        if (_trayIcon is not null)
-        {
-            _trayIcon.Visible = false;
-            _trayIcon.Dispose();
-            _trayIcon = null;
-        }
-
-        _trayIconImage?.Dispose();
-        _trayIconImage = null;
-        StopAudioCapture();
+        // Audio capture and tray icon are handled by MainWindow
     }
 
     private static void TryLog(string tag, Exception ex)
@@ -1048,157 +642,7 @@ public class MainViewModel : INotifyPropertyChanged
         catch { }
     }
 
-    // EQ spikes initialization (will be called from View)
-    public void InitializeEqSpikes(Canvas? eqCanvas)
-    {
-        if (eqCanvas is null)
-        {
-            return;
-        }
 
-        eqCanvas.Children.Clear();
-        _eqSpikes.Clear();
-        _eqValues = new double[EqSpikeCount];
-        lock (_eqLock)
-        {
-            _eqTargets = new double[EqSpikeCount];
-            _eqSnapshot = new double[EqSpikeCount];
-        }
-
-        var stroke = System.Windows.Application.Current.TryFindResource("EqSpikeBrush") as System.Windows.Media.Brush ?? System.Windows.Media.Brushes.Orange;
-        for (var i = 0; i < EqSpikeCount; i++)
-        {
-            var line = new Line
-            {
-                Stroke = stroke,
-                StrokeThickness = 5,
-                StrokeStartLineCap = PenLineCap.Round,
-                StrokeEndLineCap = PenLineCap.Round,
-                Effect = new System.Windows.Media.Effects.DropShadowEffect
-                {
-                    BlurRadius = 8,
-                    ShadowDepth = 0,
-                    Opacity = 0.45,
-                    Color = Colors.Orange
-                }
-            };
-            eqCanvas.Children.Add(line);
-            _eqSpikes.Add(line);
-        }
-    }
-
-    public void UpdateEqGeometry(Ellipse? progressRing)
-    {
-        if (progressRing is null)
-        {
-            return;
-        }
-
-        if (_eqSpikes.Count == 0)
-        {
-            return;
-        }
-
-        var ringWidth = progressRing.ActualWidth > 0 ? progressRing.ActualWidth : progressRing.Width;
-        var ringHeight = progressRing.ActualHeight > 0 ? progressRing.ActualHeight : progressRing.Height;
-        if (ringWidth <= 0 || ringHeight <= 0)
-        {
-            return;
-        }
-
-        var ringLeft = Canvas.GetLeft(progressRing);
-        var ringTop = Canvas.GetTop(progressRing);
-        if (double.IsNaN(ringLeft))
-        {
-            ringLeft = 0;
-        }
-
-        if (double.IsNaN(ringTop))
-        {
-            ringTop = 0;
-        }
-
-        var ringRadius = Math.Min(ringWidth, ringHeight) / 2.0;
-        var centerX = ringLeft + ringWidth / 2.0;
-        var centerY = ringTop + ringHeight / 2.0;
-        var baseRadius = ringRadius + progressRing.StrokeThickness / 2.0 + 4;
-        var minSpike = Math.Max(3, ringRadius * 0.04);
-        var maxSpike = Math.Max(8, ringRadius * 0.14);
-
-        for (var i = 0; i < _eqSpikes.Count; i++)
-        {
-            var angle = (Math.PI * 2.0 * i) / _eqSpikes.Count;
-            var sin = Math.Sin(angle);
-            var cos = Math.Cos(angle);
-            var spikeLength = minSpike + _eqValues[i] * (maxSpike - minSpike);
-
-            var x1 = centerX + cos * baseRadius;
-            var y1 = centerY + sin * baseRadius;
-            var x2 = centerX + cos * (baseRadius + spikeLength);
-            var y2 = centerY + sin * (baseRadius + spikeLength);
-
-            var line = _eqSpikes[i];
-            line.X1 = x1;
-            line.Y1 = y1;
-            line.X2 = x2;
-            line.Y2 = y2;
-        }
-    }
-
-    public void UpdateBandGeometry(Path? bandPath, Path? bandHighlightPath, Ellipse? innerCircle)
-    {
-        if (bandPath is null || bandHighlightPath is null || innerCircle is null)
-        {
-            return;
-        }
-
-        var innerLeft = Canvas.GetLeft(innerCircle);
-        var innerTop = Canvas.GetTop(innerCircle);
-        if (double.IsNaN(innerLeft))
-        {
-            innerLeft = 0;
-        }
-
-        if (double.IsNaN(innerTop))
-        {
-            innerTop = 0;
-        }
-
-        var innerWidth = innerCircle.ActualWidth > 0 ? innerCircle.ActualWidth : innerCircle.Width;
-        var innerHeight = innerCircle.ActualHeight > 0 ? innerCircle.ActualHeight : innerCircle.Height;
-        if (innerWidth <= 0 || innerHeight <= 0)
-        {
-            return;
-        }
-
-        const double widthPaddingRatio = 12.0 / 520.0;
-        const double heightRatio = 140.0 / 520.0;
-
-        var bandHeight = Math.Max(0, innerHeight * heightRatio);
-        var rectWidth = Math.Max(0, innerWidth * (1.0 - widthPaddingRatio));
-
-        var rectX = innerLeft + (innerWidth - rectWidth) / 2.0;
-        var rectY = innerTop + (innerHeight - bandHeight) / 2.0;
-
-        var centerX = innerLeft + innerWidth / 2.0;
-        var centerY = innerTop + innerHeight / 2.0;
-        var outerRadiusX = innerWidth / 2.0;
-        var outerRadiusY = innerHeight / 2.0;
-        var innerRadiusX = Math.Max(0, outerRadiusX - bandHeight);
-        var innerRadiusY = Math.Max(0, outerRadiusY - bandHeight);
-
-        var outerEllipse = new EllipseGeometry(new System.Windows.Point(centerX, centerY), outerRadiusX, outerRadiusY);
-        var innerEllipse = new EllipseGeometry(new System.Windows.Point(centerX, centerY), innerRadiusX, innerRadiusY);
-        var ringGeom = Geometry.Combine(outerEllipse, innerEllipse, GeometryCombineMode.Exclude, null);
-        var rectGeom = new RectangleGeometry(new Rect(rectX, rectY, rectWidth, bandHeight));
-
-        var bandGeom = Geometry.Combine(ringGeom, rectGeom, GeometryCombineMode.Intersect, null);
-        bandPath.Data = bandGeom;
-        if (bandHighlightPath is not null)
-        {
-            bandHighlightPath.Data = bandGeom;
-        }
-    }
 }
 
 public class RelayCommand : ICommand

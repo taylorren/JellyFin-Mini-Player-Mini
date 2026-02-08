@@ -11,6 +11,7 @@
 
   <ItemGroup>
     <PackageReference Include="NAudio" Version="2.2.1" />
+    <PackageReference Include="Microsoft.Extensions.DependencyInjection" Version="7.0.0" />
   </ItemGroup>
 
   <Target Name="LaunchAfterBuild" AfterTargets="Build" Condition="'$(Configuration)'=='Debug'">

@@ -92,5 +92,24 @@ namespace RoundSoundMimic.Services
             using var response = await Http.SendAsync(request).ConfigureAwait(false);
             return response.IsSuccessStatusCode;
         }
+
+        public async Task<JellyfinSession?> EnsureActiveSessionIdAsync(AppConfig config, string? activeSessionId)
+        {
+            if (!string.IsNullOrWhiteSpace(activeSessionId))
+            {
+                // We could fetch the specific session by ID, but for simplicity we'll just find any active session
+                return await FetchActiveSessionAsync(config);
+            }
+
+            try
+            {
+                var session = await FetchActiveSessionAsync(config);
+                return session;
+            }
+            catch (Exception)
+            {
+                return null;
+            }
+        }
     }
 }
