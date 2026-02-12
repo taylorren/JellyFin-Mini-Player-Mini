@@ -715,12 +715,29 @@ public class MainViewModel : INotifyPropertyChanged
 
     internal void UpdateVolumeFromSession(JellyfinSession? session)
     {
-        if (session?.PlayState?.VolumeLevel.HasValue == true && DateTime.UtcNow - _lastManualVolumeChangeUtc > TimeSpan.FromSeconds(2))
+        // Update from system volume
+        try
         {
-            _isUpdatingVolume = true;
-            Volume = session.PlayState.VolumeLevel.Value;
-            _isUpdatingVolume = false;
-            _isMuted = session.PlayState.IsMuted ?? false;
+            using var enumerator = new MMDeviceEnumerator();
+            var device = enumerator.GetDefaultAudioEndpoint(DataFlow.Render, Role.Multimedia);
+            if (device != null)
+            {
+                var volumeControl = device.AudioEndpointVolume;
+                var currentVolume = (int)(volumeControl.MasterVolumeLevelScalar * 100);
+                var currentMuted = volumeControl.Mute;
+
+                if (DateTime.UtcNow - _lastManualVolumeChangeUtc > TimeSpan.FromSeconds(2))
+                {
+                    _isUpdatingVolume = true;
+                    Volume = currentVolume;
+                    _isUpdatingVolume = false;
+                    _isMuted = currentMuted;
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            System.Diagnostics.Debug.WriteLine($"Failed to get system volume: {ex.Message}");
         }
     }
 
