@@ -184,7 +184,7 @@
                              Canvas.Left="20"
                              Canvas.Top="20">
                         <Ellipse.ToolTip>
-                            <ToolTip x:Name="RingBackgroundToolTip" Style="{StaticResource RingToolTipStyle}" Content="No playback" />
+                            <ToolTip x:Name="RingBackgroundToolTip" Style="{StaticResource RingToolTipStyle}" Content="{Binding RingBackgroundToolTip}" />
                         </Ellipse.ToolTip>
                     </Ellipse>
                     <Ellipse x:Name="ProgressRing"
@@ -201,7 +201,7 @@
                              Canvas.Top="20"
                              RenderTransformOrigin="0.5,0.5">
                         <Ellipse.ToolTip>
-                            <ToolTip x:Name="ProgressRingToolTip" Style="{StaticResource RingToolTipStyle}" Content="No playback" />
+                            <ToolTip x:Name="ProgressRingToolTip" Style="{StaticResource RingToolTipStyle}" Content="{Binding ProgressToolTip}" />
                         </Ellipse.ToolTip>
                         <Ellipse.RenderTransform>
                             <RotateTransform Angle="-90" />
