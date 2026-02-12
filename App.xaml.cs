@@ -17,7 +17,7 @@ public partial class App : Application
         
         // Register services
         services.AddSingleton<IJellyfinService, JellyfinService>();
-        services.AddSingleton<IAudioProcessingService, OptimizedAudioProcessingService>();
+        services.AddSingleton<IAudioProcessingService, AudioProcessingService>();
         services.AddSingleton<ITrayIconService, TrayIconService>();
         services.AddTransient<MainViewModel>();
         services.AddTransient<MainWindow>();  // Register MainWindow
