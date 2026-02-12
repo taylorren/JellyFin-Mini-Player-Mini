@@ -1,16 +1,16 @@
-# RoundSoundMimic
+# 🎵 RoundSoundMimic
 
 A compact and elegant mini player for Jellyfin that displays your current playback in a beautiful circular interface.
 
 ## Features
 
-- Real-time display of currently playing media
-- Circular progress indicator
-- Album artwork display
-- Playback controls (play/pause, previous, next)
-- Format information with visual indicators
-- System tray integration
-- Lightweight and unobtrusive
+- 🎵 Real-time display of currently playing media
+- ⭕ Circular progress indicator
+- 🖼️ Album artwork display
+- ▶️⏸️⏮️⏭️ Playback controls (play/pause, previous, next)
+- 📊 Format information with visual indicators
+- 📱 System tray integration
+- 🪶 Lightweight and unobtrusive
 
 ## Usage
 
