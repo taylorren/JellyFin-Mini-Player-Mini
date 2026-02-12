@@ -261,16 +261,9 @@
                             </Ellipse.OpacityMask>
                         </Ellipse>
                         
-                        <!-- Vinyl Label -->
-                        <Ellipse Width="80"
-                                 Height="80"
-                                 Fill="White"
-                                 HorizontalAlignment="Center"
-                                 VerticalAlignment="Center" />
-                        
                         <!-- Vinyl Center Hole -->
-                        <Ellipse Width="16"
-                                 Height="16"
+                        <Ellipse Width="32"
+                                 Height="32"
                                  Fill="Black"
                                  HorizontalAlignment="Center"
                                  VerticalAlignment="Center" />
@@ -300,60 +293,60 @@
                                TextAlignment="Center"
                                TextWrapping="Wrap" />
                     <StackPanel x:Name="PlaybackControlsPanel" 
-                                Orientation="Horizontal" 
-                                HorizontalAlignment="Center" 
-                                VerticalAlignment="Bottom"
-                                Margin="0,10,0,0">
-                        <Button x:Name="PrevButton" 
-                                Style="{StaticResource FlatButtonStyle}" 
-                                Width="56" 
-                                Height="38" 
-                                Margin="0,0,8,0" 
-                                Command="{Binding PrevCommand}"
-                                ToolTip="Previous Track">
-                            <Viewbox Width="20" Height="20">
-                                <Path Data="{StaticResource PrevIcon}" Fill="White" />
-                            </Viewbox>
-                        </Button>
-                        
-                        <Button x:Name="PlayPauseButton" 
-                                Style="{StaticResource FlatButtonStyle}" 
-                                Width="60" 
-                                Height="38" 
-                                Margin="0,0,8,0" 
-                                Command="{Binding PlayPauseCommand}"
-                                ToolTip="Play/Pause">
-                            <Button.Content>
+                                    Orientation="Horizontal" 
+                                    HorizontalAlignment="Center" 
+                                    VerticalAlignment="Bottom"
+                                    Margin="0,10,0,0">
+                            <Button x:Name="PrevButton" 
+                                    Style="{StaticResource FlatButtonStyle}" 
+                                    Width="56" 
+                                    Height="38" 
+                                    Margin="0,0,8,0" 
+                                    Command="{Binding PrevCommand}"
+                                    ToolTip="Previous Track">
                                 <Viewbox Width="20" Height="20">
-                                    <Path Fill="White">
-                                        <Path.Style>
-                                            <Style TargetType="Path">
-                                                <Setter Property="Data" Value="{StaticResource PauseIcon}" />
-                                                <Style.Triggers>
-                                                    <DataTrigger Binding="{Binding IsPaused}" Value="True">
-                                                        <Setter Property="Data" Value="{StaticResource PlayIcon}" />
-                                                    </DataTrigger>
-                                                </Style.Triggers>
-                                            </Style>
-                                        </Path.Style>
-                                    </Path>
+                                    <Path Data="{StaticResource PrevIcon}" Fill="White" />
                                 </Viewbox>
-                            </Button.Content>
-                        </Button>
-                        
-                        <Button x:Name="NextButton" 
-                                Style="{StaticResource FlatButtonStyle}" 
-                                Width="56" 
-                                Height="38" 
-                                Command="{Binding NextCommand}"
-                                ToolTip="Next Track">
-                            <Viewbox Width="20" Height="20">
-                                <Path Data="{StaticResource NextIcon}" Fill="White" />
-                            </Viewbox>
-                        </Button>
+                            </Button>
+                            
+                            <Button x:Name="PlayPauseButton" 
+                                    Style="{StaticResource FlatButtonStyle}" 
+                                    Width="60" 
+                                    Height="38" 
+                                    Margin="0,0,8,0" 
+                                    Command="{Binding PlayPauseCommand}"
+                                    ToolTip="Play/Pause">
+                                <Button.Content>
+                                    <Viewbox Width="20" Height="20">
+                                        <Path Fill="White">
+                                            <Path.Style>
+                                                <Style TargetType="Path">
+                                                    <Setter Property="Data" Value="{StaticResource PauseIcon}" />
+                                                    <Style.Triggers>
+                                                        <DataTrigger Binding="{Binding IsPaused}" Value="True">
+                                                            <Setter Property="Data" Value="{StaticResource PlayIcon}" />
+                                                        </DataTrigger>
+                                                    </Style.Triggers>
+                                                </Style>
+                                            </Path.Style>
+                                        </Path>
+                                    </Viewbox>
+                                </Button.Content>
+                            </Button>
+                            
+                            <Button x:Name="NextButton" 
+                                    Style="{StaticResource FlatButtonStyle}" 
+                                    Width="56" 
+                                    Height="38" 
+                                    Command="{Binding NextCommand}"
+                                    ToolTip="Next Track">
+                                <Viewbox Width="20" Height="20">
+                                    <Path Data="{StaticResource NextIcon}" Fill="White" />
+                                </Viewbox>
+                            </Button>
+                        </StackPanel>
                     </StackPanel>
-                </StackPanel>
-            </Grid>
+                </Grid>
         </Border>
 
         <Popup x:Name="MenuPopup"
