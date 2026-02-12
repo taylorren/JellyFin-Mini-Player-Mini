@@ -1,18 +1,25 @@
 using System;
 using System.Collections.Generic;
-using System.ComponentModel;
+using System.Linq;
 using System.Net.Http;
-using System.Runtime.CompilerServices;
+using System.Runtime.InteropServices;
+using Drawing = System.Drawing;
+using Forms = System.Windows.Forms;
 using System.Text.Json;
 using System.Threading.Tasks;
 using System.Windows;
-using System.Windows.Input;
+using System.Windows.Controls;
+using System.Windows.Controls.Primitives;
 using System.Windows.Media;
 using System.Windows.Media.Imaging;
+using System.Windows.Shapes;
 using System.Windows.Threading;
-using System.Windows.Data;
-using System.Windows.Controls;
+using System.Windows.Input;
+using NAudio.Dsp;
+using NAudio.Wave;
+using Microsoft.Extensions.DependencyInjection;
 using System.Windows.Media.Effects;
+using RoundSoundMimic.Converters;
 using System.Windows.Shapes;
 
 namespace RoundSoundMimic;
@@ -45,11 +52,25 @@ public class MainViewModel : INotifyPropertyChanged
     private bool _isNextEnabled = true;
     private bool _isPaused = false;
     private string _playCountText = "";
+    private string _musicFormatText = "";
+    private Geometry _musicFormatIcon = null;
 
     public string PlayCountText
     {
         get => _playCountText;
         set => SetProperty(ref _playCountText, value);
+    }
+
+    public string MusicFormatText
+    {
+        get => _musicFormatText;
+        set => SetProperty(ref _musicFormatText, value);
+    }
+
+    public Geometry MusicFormatIcon
+    {
+        get => _musicFormatIcon;
+        set => SetProperty(ref _musicFormatIcon, value);
     }
 
     public string TitleText
@@ -303,6 +324,48 @@ public class MainViewModel : INotifyPropertyChanged
     }
 
 
+    /// <summary>
+    /// Detects music format from container and sets appropriate icon
+    /// </summary>
+    private void DetectAndSetMusicFormat(JellyfinNowPlayingItem nowPlaying)
+    {
+        var container = nowPlaying.Container?.ToLowerInvariant() ?? string.Empty;
+        var formatIcon = "DefaultMusicIcon";
+        
+        // Set icon based on container type
+        formatIcon = container?.ToLowerInvariant() switch
+        {
+            "mp3" or "m4a" or "m4b" or "aac" or "wma" or "asf" => "Mp3Icon",
+            "flac" => "FlacIcon",
+            "wav" => "WavIcon",
+            "ogg" or "opus" => "OggIcon", 
+            "mka" => "DefaultMusicIcon",
+            _ => "DefaultMusicIcon"
+        };
+        
+        // Check for lossless audio
+        if (IsLosslessFormat(container))
+        {
+            formatIcon = "LosslessIcon";
+        }
+        
+        MusicFormatText = $"{container?.ToUpperInvariant() ?? ""}";
+        MusicFormatText = $"{container?.ToUpperInvariant() ?? ""}";
+        
+        // Get the icon resource from compiled resources
+        // Set music format text with container type
+        MusicFormatText = $"{container?.ToUpperInvariant() ?? ""}";
+    /// <summary>
+    /// Determines if format is lossless audio quality
+    /// </summary>
+    private static bool IsLosslessFormat(string? container)
+    {
+        return container?.Equals("flac", StringComparison.OrdinalIgnoreCase) ||
+               container?.Equals("alac", StringComparison.OrdinalIgnoreCase) ||
+               container?.Equals("wav", StringComparison.OrdinalIgnoreCase) ||
+               container?.Equals("dsd", StringComparison.OrdinalIgnoreCase);
+    }
+
     // Config and fetching methods
     public async Task LoadConfigAsync()
     {
@@ -370,6 +433,9 @@ public class MainViewModel : INotifyPropertyChanged
                 ? "(unknown album)"
                 : nowPlaying.Album;
 
+            // Detect music format and set format icon
+            DetectAndSetMusicFormat(nowPlaying);
+            
             TitleText = title.ToUpperInvariant();
             ArtistText = artists.ToUpperInvariant();
             AlbumText = album;
