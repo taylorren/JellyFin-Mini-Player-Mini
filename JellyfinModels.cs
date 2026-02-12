@@ -56,8 +56,23 @@ public sealed class JellyfinNowPlayingItem
     [JsonPropertyName("Container")]
     public string? Container { get; set; }
 
+    [JsonPropertyName("MediaStreams")]
+    public List<JellyfinMediaStream>? MediaStreams { get; set; }
+
     [JsonPropertyName("UserData")]
     public JellyfinUserData? UserData { get; set; }
+}
+
+public sealed class JellyfinMediaStream
+{
+    [JsonPropertyName("Type")]
+    public string? Type { get; set; }
+
+    [JsonPropertyName("Codec")]
+    public string? Codec { get; set; }
+
+    [JsonPropertyName("Index")]
+    public int? Index { get; set; }
 }
 
 public sealed class JellyfinUserData

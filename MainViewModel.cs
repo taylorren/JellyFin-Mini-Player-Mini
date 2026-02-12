@@ -1,25 +1,19 @@
 using System;
 using System.Collections.Generic;
+using System.ComponentModel;
 using System.Linq;
 using System.Net.Http;
-using System.Runtime.InteropServices;
-using Drawing = System.Drawing;
-using Forms = System.Windows.Forms;
+using System.Runtime.CompilerServices;
 using System.Text.Json;
 using System.Threading.Tasks;
 using System.Windows;
-using System.Windows.Controls;
-using System.Windows.Controls.Primitives;
+using System.Windows.Input;
 using System.Windows.Media;
 using System.Windows.Media.Imaging;
-using System.Windows.Shapes;
 using System.Windows.Threading;
-using System.Windows.Input;
-using NAudio.Dsp;
-using NAudio.Wave;
-using Microsoft.Extensions.DependencyInjection;
+using System.Windows.Data;
+using System.Windows.Controls;
 using System.Windows.Media.Effects;
-using RoundSoundMimic.Converters;
 using System.Windows.Shapes;
 
 namespace RoundSoundMimic;
@@ -52,8 +46,8 @@ public class MainViewModel : INotifyPropertyChanged
     private bool _isNextEnabled = true;
     private bool _isPaused = false;
     private string _playCountText = "";
-    private string _musicFormatText = "";
-    private Geometry _musicFormatIcon = null;
+    private string _formatText = "";
+    private Brush? _formatBrush;
 
     public string PlayCountText
     {
@@ -61,16 +55,26 @@ public class MainViewModel : INotifyPropertyChanged
         set => SetProperty(ref _playCountText, value);
     }
 
-    public string MusicFormatText
+    public string FormatText
     {
-        get => _musicFormatText;
-        set => SetProperty(ref _musicFormatText, value);
+        get => _formatText;
+        set => SetProperty(ref _formatText, value);
     }
 
-    public Geometry MusicFormatIcon
+    public Brush? FormatBrush
     {
-        get => _musicFormatIcon;
-        set => SetProperty(ref _musicFormatIcon, value);
+        get => _formatBrush;
+        set => SetProperty(ref _formatBrush, value);
+    }
+
+    private static bool IsLosslessFormat(string? format)
+    {
+        if (string.IsNullOrEmpty(format)) return false;
+        var losslessFormats = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+        {
+            "FLAC", "WAV", "ALAC", "APE", "WV", "TAK", "TTA", "AIFF", "DSD", "DSF", "DFF"
+        };
+        return losslessFormats.Contains(format);
     }
 
     public string TitleText
@@ -158,7 +162,7 @@ public class MainViewModel : INotifyPropertyChanged
     }
 
     // Helper to update the view element when using code-behind view
-    private void UpdateLosslessTextBlock(string text)
+    private void UpdateFormatTextBlock(string text)
     {
         // Try to update the view control if present (MainWindow uses code-behind)
         try
@@ -167,7 +171,7 @@ public class MainViewModel : INotifyPropertyChanged
             {
                 mw.Dispatcher.Invoke(() =>
                 {
-                    if (mw.FindName("LosslessTextBlock") is TextBlock tb)
+                    if (mw.FindName("FormatTextBlock") is TextBlock tb)
                     {
                         tb.Text = text;
                     }
@@ -324,48 +328,6 @@ public class MainViewModel : INotifyPropertyChanged
     }
 
 
-    /// <summary>
-    /// Detects music format from container and sets appropriate icon
-    /// </summary>
-    private void DetectAndSetMusicFormat(JellyfinNowPlayingItem nowPlaying)
-    {
-        var container = nowPlaying.Container?.ToLowerInvariant() ?? string.Empty;
-        var formatIcon = "DefaultMusicIcon";
-        
-        // Set icon based on container type
-        formatIcon = container?.ToLowerInvariant() switch
-        {
-            "mp3" or "m4a" or "m4b" or "aac" or "wma" or "asf" => "Mp3Icon",
-            "flac" => "FlacIcon",
-            "wav" => "WavIcon",
-            "ogg" or "opus" => "OggIcon", 
-            "mka" => "DefaultMusicIcon",
-            _ => "DefaultMusicIcon"
-        };
-        
-        // Check for lossless audio
-        if (IsLosslessFormat(container))
-        {
-            formatIcon = "LosslessIcon";
-        }
-        
-        MusicFormatText = $"{container?.ToUpperInvariant() ?? ""}";
-        MusicFormatText = $"{container?.ToUpperInvariant() ?? ""}";
-        
-        // Get the icon resource from compiled resources
-        // Set music format text with container type
-        MusicFormatText = $"{container?.ToUpperInvariant() ?? ""}";
-    /// <summary>
-    /// Determines if format is lossless audio quality
-    /// </summary>
-    private static bool IsLosslessFormat(string? container)
-    {
-        return container?.Equals("flac", StringComparison.OrdinalIgnoreCase) ||
-               container?.Equals("alac", StringComparison.OrdinalIgnoreCase) ||
-               container?.Equals("wav", StringComparison.OrdinalIgnoreCase) ||
-               container?.Equals("dsd", StringComparison.OrdinalIgnoreCase);
-    }
-
     // Config and fetching methods
     public async Task LoadConfigAsync()
     {
@@ -421,6 +383,7 @@ public class MainViewModel : INotifyPropertyChanged
                 UpdateTrayNowPlayingText("RoundSound Mimic", string.Empty);
                 StatusText = "No active session";
                 PlayCountText = "";
+                FormatText = "";
                 _lastPlaybackSeenUtc = DateTime.MinValue;
                 return;
             }
@@ -433,9 +396,6 @@ public class MainViewModel : INotifyPropertyChanged
                 ? "(unknown album)"
                 : nowPlaying.Album;
 
-            // Detect music format and set format icon
-            DetectAndSetMusicFormat(nowPlaying);
-            
             TitleText = title.ToUpperInvariant();
             ArtistText = artists.ToUpperInvariant();
             AlbumText = album;
@@ -462,6 +422,7 @@ public class MainViewModel : INotifyPropertyChanged
             {
                 PlayCountText = "";
             }
+            FormatText = nowPlaying.MediaStreams?.FirstOrDefault(s => s.Type == "Audio")?.Codec?.ToUpperInvariant() ?? nowPlaying.Container?.ToUpperInvariant() ?? "";
             if (showBalloon)
             {
                 ShowTrayBalloon(title, artists);
@@ -476,6 +437,7 @@ public class MainViewModel : INotifyPropertyChanged
             ArtistText = string.Empty;
             AlbumText = string.Empty;
             PlayCountText = "";
+            FormatText = "";
             AlbumArtSource = null;
             _currentRunTimeTicks = 0;
             _currentPositionTicks = 0;
