@@ -1,5 +1,6 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Linq;
 using System.Net.Http;
 using System.Runtime.InteropServices;
@@ -41,6 +42,10 @@ public partial class MainWindow : Window
     private AppConfig _config = new();
     private DispatcherTimer? _pollTimer;
     private DispatcherTimer? _eqTimer;
+    private BrushPool? _brushPool;
+    private Geometry? _cachedBandGeometry;
+    private Size _cachedInnerSize = Size.Empty;
+    private PerformanceMonitor? _performanceMonitor;
 
     // Parameterless constructor for WPF XAML loader
     public MainWindow()
@@ -70,6 +75,13 @@ public partial class MainWindow : Window
         _innerCircle = FindName("InnerCircle") as FrameworkElement;
         _bandPath = FindName("BandPath") as Path;
         _eqGlowEffect = FindName("EqGlowEffect") as DropShadowEffect;
+        
+        // Initialize brush pool for performance optimization
+        _brushPool = new BrushPool();
+        
+        // Initialize performance monitor
+        _performanceMonitor = new PerformanceMonitor();
+        _performanceMonitor.PerformanceUpdated += OnPerformanceUpdated;
         
         // Initialize tray icon
         var iconImage = FindResource("AppIcon") as ImageSource;
@@ -105,6 +117,9 @@ public partial class MainWindow : Window
         }
         
         Loaded += OnLoaded;
+        
+        // Start performance monitoring after UI is ready
+        _performanceMonitor?.Start(60.0);
         _pollTimer = new DispatcherTimer
         {
             Interval = TimeSpan.FromSeconds(1)
@@ -113,9 +128,9 @@ public partial class MainWindow : Window
 
         _eqTimer = new DispatcherTimer
         {
-            Interval = TimeSpan.FromMilliseconds(33) // ~30 FPS for smoother animation
+            Interval = TimeSpan.FromMilliseconds(16) // ~60 FPS for smoother animation
         };
-        _eqTimer.Tick += (_, _) => _audioService?.UpdateEqAnimation();
+        _eqTimer.Tick += OnEqTimerTick;
     }
     
     
@@ -140,6 +155,9 @@ public partial class MainWindow : Window
             _eqTimer.Start();
             UpdateBandGeometry();
             _viewModel.OnLoaded();
+            
+            // Start performance monitoring after everything is initialized
+            _performanceMonitor?.Start(60.0);
             // UpdatePlayPauseIcon is now handled by the ViewModel
         }
     }
@@ -148,6 +166,8 @@ public partial class MainWindow : Window
     {
         _trayService?.Dispose();
         _audioService?.StopCapture();
+        _performanceMonitor?.Dispose();
+        _brushPool?.Dispose();
         _viewModel?.OnClosed();
         base.OnClosed(e);
     }
@@ -253,19 +273,14 @@ public partial class MainWindow : Window
                 line.Y2 = y2;
             }
             
-            // Enhance visual appearance: color gradient and dynamic thickness
-            // Base color is Orange (#FF8A2A) to Light Orange (#FFC166)
-            var r = (byte)255;
-            var g = (byte)(138 + (193 - 138) * intensity);
-            var b = (byte)(42 + (102 - 42) * intensity);
-            
+            // Use BrushPool for optimized brush allocation and pre-calculated gradients
             line.StrokeThickness = 3 + intensity * 6; // Dynamic thickness
             line.Opacity = 0.6 + intensity * 0.4;    // More opaque when active
             
-            // Reuse or update brush efficiently
-            if (line.Stroke is not SolidColorBrush scb || scb.Color.G != g)
+            // Get optimized brush from pool - eliminates real-time allocations
+            if (_brushPool != null)
             {
-                line.Stroke = new SolidColorBrush(Color.FromRgb(r, g, b));
+                line.Stroke = _brushPool.GetBrush(intensity);
             }
         }
 
@@ -310,6 +325,19 @@ public partial class MainWindow : Window
             return;
         }
 
+        // Check if inner circle size has changed - only recalculate geometry if needed
+        var currentSize = new Size(innerWidth, innerHeight);
+        if (_cachedInnerSize == currentSize && _cachedBandGeometry != null)
+        {
+            // Use cached geometry
+            if (_bandPath.Data != _cachedBandGeometry)
+            {
+                _bandPath.Data = _cachedBandGeometry;
+            }
+            return;
+        }
+
+        // Calculate new geometry only when size changes
         const double widthPaddingRatio = 12.0 / 520.0;
         const double heightRatio = 140.0 / 520.0;
 
@@ -326,11 +354,13 @@ public partial class MainWindow : Window
         var centerY = innerTop + innerHeight / 2.0;
         var ellipseGeom = new EllipseGeometry(new Point(centerX, centerY), innerWidth / 2.0, innerHeight / 2.0);
 
-        // Only update if the geometry has changed significantly to reduce rendering overhead
+        // Create and cache the new geometry
         var newGeometry = Geometry.Combine(rectGeom, ellipseGeom, GeometryCombineMode.Intersect, null);
+        _cachedBandGeometry = newGeometry;
+        _cachedInnerSize = currentSize;
         
-        // Check if the new geometry is different from the current one before updating
-        if (_bandPath.Data == null || !_bandPath.Data.Equals(newGeometry))
+        // Update the band path with cached geometry
+        if (_bandPath.Data != newGeometry)
         {
             _bandPath.Data = newGeometry;
         }
@@ -451,6 +481,34 @@ public partial class MainWindow : Window
         if (_configPopup is not null)
         {
             _configPopup.IsOpen = false;
+        }
+    }
+    
+    /// <summary>
+    /// Handles performance monitor updates for debugging and optimization
+    /// </summary>
+    private void OnPerformanceUpdated(PerformanceStats stats)
+    {
+        // Log performance issues for debugging
+        if (stats.GetEfficiencyRating() < 0.8) // 80% efficiency threshold
+        {
+            Debug.WriteLine($"Performance Warning: {stats}");
+        }
+        
+        // Update performance in UI if needed (could show FPS counter)
+        // For now, just monitor internally
+    }
+    
+    /// <summary>
+    /// Optimized EQ timer tick that respects frame rate limiting
+    /// </summary>
+    private void OnEqTimerTick(object? sender, EventArgs e)
+    {
+        // Only update audio service if performance monitor allows
+        var stats = _performanceMonitor?.GetCurrentStats();
+        if (stats != null && stats.GetEfficiencyRating() > 0.5)
+        {
+            _audioService?.UpdateEqAnimation();
         }
     }
 }
