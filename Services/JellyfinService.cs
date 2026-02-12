@@ -143,5 +143,22 @@ namespace RoundSoundMimic.Services
                 return null;
             }
         }
+
+        public async Task<bool> SetVolumeAsync(AppConfig config, string sessionId, int volume)
+        {
+            if (string.IsNullOrWhiteSpace(config.ServerUrl) || string.IsNullOrWhiteSpace(sessionId))
+            {
+                return false;
+            }
+
+            var baseUrl = config.ServerUrl.Trim().TrimEnd('/');
+            var url = $"{baseUrl}/Sessions/{sessionId}/Playing?Volume={volume}";
+
+            using var request = new HttpRequestMessage(HttpMethod.Post, url);
+            request.Headers.Add("X-Emby-Token", config.ApiKey);
+
+            using var response = await Http.SendAsync(request).ConfigureAwait(false);
+            return response.IsSuccessStatusCode;
+        }
     }
 }

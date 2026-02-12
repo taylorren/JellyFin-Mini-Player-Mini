@@ -424,7 +424,7 @@ public partial class MainWindow : Window
         var current = source;
         while (current is not null)
         {
-            if (current is ButtonBase or TextBoxBase or Popup)
+            if (current is ButtonBase or TextBoxBase or Popup or Slider)
             {
                 return true;
             }

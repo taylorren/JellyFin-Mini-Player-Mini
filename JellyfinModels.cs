@@ -25,6 +25,12 @@ public sealed class JellyfinPlayState
 
     [JsonPropertyName("IsPaused")]
     public bool? IsPaused { get; set; }
+
+    [JsonPropertyName("VolumeLevel")]
+    public int? VolumeLevel { get; set; }
+
+    [JsonPropertyName("IsMuted")]
+    public bool? IsMuted { get; set; }
 }
 
 public sealed class JellyfinNowPlayingItem

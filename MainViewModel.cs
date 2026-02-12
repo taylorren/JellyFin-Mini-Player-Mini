@@ -15,6 +15,7 @@ using System.Windows.Data;
 using System.Windows.Controls;
 using System.Windows.Media.Effects;
 using System.Windows.Shapes;
+using NAudio.CoreAudioApi;
 
 namespace RoundSoundMimic;
 
@@ -48,6 +49,36 @@ public class MainViewModel : INotifyPropertyChanged
     private string _playCountText = "";
     private string _formatText = "";
     private Brush? _formatBrush;
+    private int _volume = 50;
+    private int _volumeBeforeMute = 50;
+    private bool _isMuted = false;
+    private bool _isUpdatingVolume = false;
+    private DateTime _lastManualVolumeChangeUtc = DateTime.MinValue;
+
+    public int Volume
+    {
+        get => _volume;
+        set
+        {
+            if (SetProperty(ref _volume, value))
+            {
+                OnPropertyChanged(nameof(VolumeToolTip));
+                if (!_isUpdatingVolume)
+                {
+                    _lastManualVolumeChangeUtc = DateTime.UtcNow;
+                    _ = SetVolumeAsync(value);
+                }
+                if (_isMuted && value > 0)
+                {
+                    _isMuted = false;
+                }
+            }
+        }
+    }
+
+    public string VolumeToolTip => $"Volume: {Volume}%";
+
+    public ICommand MuteCommand { get; }
 
     public string PlayCountText
     {
@@ -241,7 +272,32 @@ public class MainViewModel : INotifyPropertyChanged
         FetchCommand = new RelayCommand(FetchExecute);
         SaveConfigCommand = new RelayCommand(SaveConfigExecute);
         CloseConfigCommand = new RelayCommand(CloseConfigExecute);
+        MuteCommand = new RelayCommand(MuteExecute);
 
+        // Initialize volume from system
+        InitializeSystemVolume();
+    }
+
+    private void InitializeSystemVolume()
+    {
+        try
+        {
+            using var enumerator = new MMDeviceEnumerator();
+            var device = enumerator.GetDefaultAudioEndpoint(DataFlow.Render, Role.Multimedia);
+            if (device != null)
+            {
+                var volumeControl = device.AudioEndpointVolume;
+                var currentVolume = (int)(volumeControl.MasterVolumeLevelScalar * 100);
+                _volume = currentVolume;
+                _volumeBeforeMute = currentVolume;
+                _isMuted = volumeControl.Mute;
+                OnPropertyChanged(nameof(Volume));
+            }
+        }
+        catch (Exception ex)
+        {
+            System.Diagnostics.Debug.WriteLine($"Failed to get system volume: {ex.Message}");
+        }
     }
 
     public event PropertyChangedEventHandler? PropertyChanged;
@@ -276,6 +332,44 @@ public class MainViewModel : INotifyPropertyChanged
     {
         await SendPlaybackCommandAsync("NextTrack");
         await RefreshAfterCommandAsync();
+    }
+
+    public void MuteExecute()
+    {
+        _lastManualVolumeChangeUtc = DateTime.UtcNow;
+        try
+        {
+            using var enumerator = new MMDeviceEnumerator();
+            var device = enumerator.GetDefaultAudioEndpoint(DataFlow.Render, Role.Multimedia);
+            if (device != null)
+            {
+                var volumeControl = device.AudioEndpointVolume;
+                volumeControl.Mute = !_isMuted;
+                _isMuted = volumeControl.Mute;
+                
+                // Update volume display if unmuting
+                if (!_isMuted)
+                {
+                    var currentVolume = (int)(volumeControl.MasterVolumeLevelScalar * 100);
+                    _isUpdatingVolume = true;
+                    Volume = currentVolume;
+                    _isUpdatingVolume = false;
+                }
+                else
+                {
+                    _volumeBeforeMute = Volume;
+                    _isUpdatingVolume = true;
+                    Volume = 0;
+                    _isUpdatingVolume = false;
+                }
+                
+                OnPropertyChanged(nameof(Volume));
+            }
+        }
+        catch (Exception ex)
+        {
+            System.Diagnostics.Debug.WriteLine($"Failed to toggle mute: {ex.Message}");
+        }
     }
 
     public void OpenConfigExecute()
@@ -339,7 +433,7 @@ public class MainViewModel : INotifyPropertyChanged
         Progress = 0;
     }
 
-    private async Task FetchNowPlayingAsync()
+    private async Task FetchNowPlayingAsync(bool isManualAction = false)
     {
         if (_isFetching)
         {
@@ -360,6 +454,7 @@ public class MainViewModel : INotifyPropertyChanged
             var nowPlaying = session?.NowPlayingItem;
             _activeSessionId = session?.Id;
             IsPaused = session?.PlayState?.IsPaused ?? false;
+            UpdateVolumeFromSession(session?.PlayState?.VolumeLevel);
             UpdatePlayPauseIcon();
 
             if (nowPlaying is null)
@@ -558,9 +653,8 @@ public class MainViewModel : INotifyPropertyChanged
             remaining = TimeSpan.Zero;
         }
 
-        var tooltipText = $"Total: {FormatTime(total)}\nRemaining: {FormatTime(remaining)}";
-        ProgressToolTip = tooltipText;
-        RingBackgroundToolTip = tooltipText;
+        ProgressToolTip = $"Remaining: {FormatTime(remaining)}";
+        RingBackgroundToolTip = $"Total: {FormatTime(total)}";
     }
 
     private static string FormatTime(TimeSpan time)
@@ -619,6 +713,34 @@ public class MainViewModel : INotifyPropertyChanged
         StatusText = ok ? $"Command sent: {command}" : $"Command failed";
     }
 
+    private async Task SetVolumeAsync(int volume)
+    {
+        await Task.Run(() =>
+        {
+            try
+            {
+                using var enumerator = new MMDeviceEnumerator();
+                var device = enumerator.GetDefaultAudioEndpoint(DataFlow.Render, Role.Multimedia);
+                if (device != null)
+                {
+                    var volumeControl = device.AudioEndpointVolume;
+                    volumeControl.MasterVolumeLevelScalar = volume / 100.0f;
+                }
+            }
+            catch (Exception ex)
+            {
+                // Log error but don't show to user since this is background operation
+                System.Diagnostics.Debug.WriteLine($"Failed to set system volume: {ex.Message}");
+            }
+        });
+    }
+
+    internal void UpdateVolumeFromSession(int? volume)
+    {
+        // Since we now control system volume, don't update volume from Jellyfin session
+        // The volume display should reflect system volume, not Jellyfin volume
+    }
+
     private async Task<string?> EnsureActiveSessionIdAsync()
     {
         if (!string.IsNullOrWhiteSpace(_activeSessionId))
@@ -644,7 +766,7 @@ public class MainViewModel : INotifyPropertyChanged
     private async Task RefreshAfterCommandAsync()
     {
         await Task.Delay(300);
-        await FetchNowPlayingAsync();
+        await FetchNowPlayingAsync(isManualAction: true);
     }
 
     // Methods to call from View

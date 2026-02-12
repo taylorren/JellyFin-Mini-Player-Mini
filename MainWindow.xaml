@@ -38,6 +38,9 @@
         <Geometry x:Key="PlayIcon">M6,4 L20,12 L6,20 Z</Geometry>
         <Geometry x:Key="PauseIcon">M6,4 L10,4 L10,20 L6,20 Z M14,4 L18,4 L18,20 L14,20 Z</Geometry>
         <Geometry x:Key="NextIcon">M6,4 L6,20 L16,12 Z M18,4 L18,20 L20,20 L20,4 Z</Geometry>
+        <Geometry x:Key="VolumeHighIcon">M3,9 L7,9 L12,4 L12,20 L7,15 L3,15 Z M14,8 C16,9 17,11 17,12 C17,13 16,15 14,16 M16,5 C19,7 21,10 21,12 C21,14 19,17 16,19</Geometry>
+        <Geometry x:Key="VolumeLowIcon">M3,9 L7,9 L12,4 L12,20 L7,15 L3,15 Z M14,8 C16,9 17,11 17,12 C17,13 16,15 14,16</Geometry>
+        <Geometry x:Key="VolumeMuteIcon">M3,9 L7,9 L12,4 L12,20 L7,15 L3,15 Z M14,9 L20,15 M14,15 L20,9</Geometry>
         <DrawingImage x:Key="AppIcon">
             <DrawingImage.Drawing>
                 <DrawingGroup>
@@ -146,6 +149,8 @@
             <Setter Property="FontSize" Value="13" />
             <Setter Property="HasDropShadow" Value="True" />
         </Style>
+        <local:VolumeWidthConverter x:Key="VolumeWidthConverter" />
+        <local:VolumeToIconConverter x:Key="VolumeToIconConverter" />
         <Storyboard x:Key="AlbumArtRotationStoryboard" RepeatBehavior="Forever" Timeline.DesiredFrameRate="60">
             <DoubleAnimation Storyboard.TargetName="AlbumArtRotate"
                              Storyboard.TargetProperty="Angle"
@@ -174,36 +179,27 @@
 
         <Border Background="{StaticResource PanelBrush}" CornerRadius="18" Padding="24">
             <Grid HorizontalAlignment="Center" VerticalAlignment="Center">
-                <Canvas x:Name="DrawingCanvas" Width="640" Height="640">
+                <Canvas x:Name="DrawingCanvas" Width="640" Height="640" IsHitTestVisible="False">
                     <Ellipse x:Name="RingBackground"
                              Width="600"
                              Height="600"
+                             Fill="Transparent"
                              Stroke="{StaticResource RingBackBrush}"
                              StrokeThickness="18"
-                             ToolTipService.InitialShowDelay="200"
-                             ToolTipService.ShowDuration="60000"
                              Canvas.Left="20"
-                             Canvas.Top="20">
-                        <Ellipse.ToolTip>
-                            <ToolTip x:Name="RingBackgroundToolTip" Style="{StaticResource RingToolTipStyle}" Content="{Binding RingBackgroundToolTip}" />
-                        </Ellipse.ToolTip>
-                    </Ellipse>
+                             Canvas.Top="20" />
                     <Ellipse x:Name="ProgressRing"
                              Width="600"
                              Height="600"
+                             Fill="Transparent"
                              Stroke="{StaticResource ProgressBrush}"
                              StrokeThickness="18"
                              StrokeStartLineCap="Round"
                              StrokeEndLineCap="Round"
                              StrokeDashArray="{Binding ProgressDashArray}"
-                             ToolTipService.InitialShowDelay="200"
-                             ToolTipService.ShowDuration="60000"
                              Canvas.Left="20"
                              Canvas.Top="20"
                              RenderTransformOrigin="0.5,0.5">
-                        <Ellipse.ToolTip>
-                            <ToolTip x:Name="ProgressRingToolTip" Style="{StaticResource RingToolTipStyle}" Content="{Binding ProgressToolTip}" />
-                        </Ellipse.ToolTip>
                         <Ellipse.RenderTransform>
                             <RotateTransform Angle="-90" />
                         </Ellipse.RenderTransform>
@@ -220,9 +216,9 @@
                                               ShadowDepth="0" />
                         </Canvas.Effect>
                     </Canvas>
-                    <Ellipse x:Name="InnerCircle" Width="520" Height="520" Fill="{StaticResource InnerCircleBrush}" Canvas.Left="60" Canvas.Top="60" />
+                    <Ellipse x:Name="InnerCircle" Width="520" Height="520" Fill="{StaticResource InnerCircleBrush}" Canvas.Left="60" Canvas.Top="60" IsHitTestVisible="False" />
                     <Path x:Name="BandPath" Fill="{StaticResource BandBrush}" />
-                    <Grid Canvas.Left="67" Canvas.Top="67" Width="506" Height="506">
+                    <Grid Canvas.Left="67" Canvas.Top="67" Width="506" Height="506" IsHitTestVisible="False">
                         <!-- Vinyl Record Base -->
                         <Ellipse RenderTransformOrigin="0.5,0.5">
                             <Ellipse.RenderTransform>
@@ -360,6 +356,100 @@
                                 </Viewbox>
                             </Button>
                         </StackPanel>
+                    <StackPanel x:Name="VolumePanel" 
+                                Orientation="Horizontal" 
+                                HorizontalAlignment="Center" 
+                                VerticalAlignment="Bottom"
+                                Margin="0,8,0,0">
+                        <Button x:Name="VolumeButton" 
+                                Style="{StaticResource FlatButtonStyle}" 
+                                Width="36" 
+                                Height="28" 
+                                Margin="0,0,4,0"
+                                Command="{Binding MuteCommand}"
+                                ToolTip="{Binding VolumeToolTip}">
+                            <Viewbox Width="16" Height="16">
+                                <Path Fill="White" Data="{Binding Volume, Converter={StaticResource VolumeToIconConverter}}" />
+                            </Viewbox>
+                        </Button>
+                        <Slider x:Name="VolumeSlider"
+                                Width="100"
+                                Height="28"
+                                Minimum="0"
+                                Maximum="100"
+                                SmallChange="1"
+                                LargeChange="10"
+                                IsSnapToTickEnabled="True"
+                                TickFrequency="1"
+                                Value="{Binding Volume, Mode=TwoWay}"
+                                ToolTip="{Binding VolumeToolTip}"
+                                Margin="0,0,8,0">
+                            <Slider.Style>
+                                <Style TargetType="Slider">
+                                    <Setter Property="Template">
+                                        <Setter.Value>
+                                            <ControlTemplate TargetType="Slider">
+                                                <Grid>
+                                                    <Border x:Name="TrackBackground"
+                                                            Height="4"
+                                                            Width="100"
+                                                            Background="#33FFFFFF"
+                                                            CornerRadius="2"
+                                                            VerticalAlignment="Center" />
+                                                    <Border x:Name="TrackFill"
+                                                            Height="4"
+                                                            Background="{StaticResource ProgressBrush}"
+                                                            CornerRadius="2"
+                                                            VerticalAlignment="Center"
+                                                            HorizontalAlignment="Left">
+                                                        <Border.Width>
+                                                            <MultiBinding Converter="{StaticResource VolumeWidthConverter}">
+                                                                <Binding Path="Value" RelativeSource="{RelativeSource TemplatedParent}" />
+                                                                <Binding Path="ActualWidth" ElementName="TrackBackground" />
+                                                            </MultiBinding>
+                                                        </Border.Width>
+                                                    </Border>
+                                                    <Track x:Name="PART_Track">
+                                                        <Track.Thumb>
+                                                            <Thumb Width="12" Height="12" Cursor="Hand">
+                                                                <Thumb.Style>
+                                                                    <Style TargetType="Thumb">
+                                                                        <Setter Property="Template">
+                                                                            <Setter.Value>
+                                                                                <ControlTemplate TargetType="Thumb">
+                                                                                    <Border Background="{StaticResource AccentBrush}"
+                                                                                            BorderBrush="#FFFFFFFF"
+                                                                                            BorderThickness="1"
+                                                                                            CornerRadius="6">
+                                                                                        <Border.Effect>
+                                                                                            <DropShadowEffect BlurRadius="8"
+                                                                                                              Color="#FF8A2A"
+                                                                                                              Opacity="0.8"
+                                                                                                              ShadowDepth="0" />
+                                                                                        </Border.Effect>
+                                                                                    </Border>
+                                                                                </ControlTemplate>
+                                                                            </Setter.Value>
+                                                                        </Setter>
+                                                                    </Style>
+                                                                </Thumb.Style>
+                                                            </Thumb>
+                                                        </Track.Thumb>
+                                                    </Track>
+                                                </Grid>
+                                            </ControlTemplate>
+                                        </Setter.Value>
+                                    </Setter>
+                                </Style>
+                            </Slider.Style>
+                        </Slider>
+                        <TextBlock Text="{Binding Volume, StringFormat={}{0}%}"
+                                   Foreground="{StaticResource MutedTextBrush}"
+                                   FontSize="11"
+                                   VerticalAlignment="Center"
+                                   Width="32"
+                                   TextAlignment="Right" />
+                    </StackPanel>
                     </StackPanel>
                 </Grid>
         </Border>
