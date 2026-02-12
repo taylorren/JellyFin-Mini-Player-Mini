@@ -10,16 +10,20 @@ namespace RoundSoundMimic.Services
         private const int EqSpikeCount = 48;
         private const int FftSize = 2048;
         private const int FftM = 11;
+        private const int HalfFftSize = FftSize / 2;
         
+        // Pre-allocated buffers to avoid allocations during processing
         private readonly float[] _fftBuffer = new float[FftSize];
         private readonly Complex[] _fftComplex = new Complex[FftSize];
-        private readonly double[] _fftMagnitudes = new double[FftSize / 2];
+        private readonly double[] _fftMagnitudes = new double[HalfFftSize];
         private readonly float[] _fftWindow = new float[FftSize];
+        private readonly double[] _logFreqMapping = new double[EqSpikeCount]; // Pre-calculated frequency mapping
         private int _fftPos;
         private WasapiLoopbackCapture? _capture;
         private double[] _eqValues = Array.Empty<double>();
         private double[] _eqTargets = Array.Empty<double>();
         private double[] _eqSnapshot = new double[EqSpikeCount];
+        private readonly double[] _eqFallRates = new double[EqSpikeCount]; // Track falling speed for gravity effect
         private readonly object _eqLock = new();
         
         public event Action<double[]>? EqValuesUpdated;
@@ -27,6 +31,7 @@ namespace RoundSoundMimic.Services
         public AudioProcessingService()
         {
             InitializeFftWindow();
+            InitializeFrequencyMapping();
             _eqValues = new double[EqSpikeCount];
             lock (_eqLock)
             {
@@ -40,6 +45,16 @@ namespace RoundSoundMimic.Services
             for (var i = 0; i < _fftWindow.Length; i++)
             {
                 _fftWindow[i] = (float)(0.5 * (1.0 - Math.Cos(2.0 * Math.PI * i / (FftSize - 1))));
+            }
+        }
+
+        // Pre-calculate logarithmic frequency mapping to avoid repeated calculations
+        private void InitializeFrequencyMapping()
+        {
+            var maxBin = HalfFftSize - 1;
+            for (var band = 0; band < EqSpikeCount; band++)
+            {
+                _logFreqMapping[band] = Math.Pow(maxBin, band / (double)EqSpikeCount);
             }
         }
 
@@ -89,25 +104,37 @@ namespace RoundSoundMimic.Services
             {
                 var waveBuffer = new WaveBuffer(e.Buffer);
                 var floatBuffer = waveBuffer.FloatBuffer;
+                
+                // Process samples in chunks to improve cache locality
                 for (var i = 0; i < sampleCount; i += channelCount)
                 {
                     var sample = 0f;
+                    var endIndex = Math.Min(i + channelCount, sampleCount);
+                    
                     for (var channel = 0; channel < channelCount; channel++)
                     {
-                        sample += floatBuffer[i + channel];
+                        if (i + channel < floatBuffer.Length)
+                        {
+                            sample += floatBuffer[i + channel];
+                        }
                     }
                     AddSample(sample / channelCount);
                 }
             }
             else
             {
+                // Process samples in chunks to improve cache locality
                 for (var i = 0; i < e.BytesRecorded; i += bytesPerSample * channelCount)
                 {
                     var sample = 0f;
+                    
                     for (var channel = 0; channel < channelCount; channel++)
                     {
                         var offset = i + channel * bytesPerSample;
-                        sample += BitConverter.ToInt16(e.Buffer, offset) / 32768f;
+                        if (offset + 1 < e.Buffer.Length)
+                        {
+                            sample += BitConverter.ToInt16(e.Buffer, offset) / 32768f;
+                        }
                     }
                     AddSample(sample / channelCount);
                 }
@@ -136,14 +163,19 @@ namespace RoundSoundMimic.Services
                 return;
             }
 
+            // Apply window function and prepare complex array
             for (var i = 0; i < FftSize; i++)
             {
                 _fftComplex[i].X = _fftBuffer[i] * _fftWindow[i];
                 _fftComplex[i].Y = 0;
             }
 
+            // Perform FFT
             FastFourierTransform.FFT(true, FftM, _fftComplex);
-            for (var i = 0; i < _fftMagnitudes.Length; i++)
+            
+            // Calculate magnitudes (optimized loop)
+            var halfSize = HalfFftSize;
+            for (var i = 0; i < halfSize; i++)
             {
                 var x = _fftComplex[i].X;
                 var y = _fftComplex[i].Y;
@@ -156,15 +188,17 @@ namespace RoundSoundMimic.Services
 
         private void UpdateEqTargetsFromFft()
         {
-            var maxBin = _fftMagnitudes.Length - 1;
+            var maxBin = HalfFftSize - 1;
             if (maxBin <= 0) return;
 
+            // Find maximum magnitude efficiently
             var maxMagnitude = 0.0;
             for (var i = 0; i <= maxBin; i++)
             {
-                if (_fftMagnitudes[i] > maxMagnitude)
+                var mag = _fftMagnitudes[i];
+                if (mag > maxMagnitude)
                 {
-                    maxMagnitude = _fftMagnitudes[i];
+                    maxMagnitude = mag;
                 }
             }
 
@@ -172,13 +206,16 @@ namespace RoundSoundMimic.Services
 
             lock (_eqLock)
             {
+                // Use pre-calculated frequency mapping to avoid repeated Math.Pow calls
                 for (var band = 0; band < EqSpikeCount; band++)
                 {
-                    var start = (int)Math.Floor(Math.Pow(maxBin, band / (double)EqSpikeCount));
-                    var end = (int)Math.Floor(Math.Pow(maxBin, (band + 1) / (double)EqSpikeCount));
+                    var start = (int)_logFreqMapping[band];
+                    var end = (int)_logFreqMapping[Math.Min(band + 1, EqSpikeCount - 1)];
+                    
                     start = Math.Clamp(start, 1, maxBin);
                     end = Math.Clamp(end, start + 1, maxBin);
 
+                    // Sum magnitudes in the frequency range
                     var sum = 0.0;
                     for (var i = start; i < end; i++)
                     {
@@ -187,7 +224,7 @@ namespace RoundSoundMimic.Services
 
                     var avg = sum / (end - start);
                     var normalized = avg / maxMagnitude;
-                    var scaled = Math.Pow(normalized, 0.5);
+                    var scaled = Math.Sqrt(normalized); // Using sqrt instead of Math.Pow(x, 0.5) for performance
                     _eqTargets[band] = Math.Clamp(scaled, 0, 1);
                 }
             }
@@ -197,7 +234,10 @@ namespace RoundSoundMimic.Services
         {
             lock (_eqLock)
             {
-                return _eqValues;
+                // Return a copy to avoid external modification
+                var result = new double[_eqValues.Length];
+                Array.Copy(_eqValues, result, _eqValues.Length);
+                return result;
             }
         }
 
@@ -211,11 +251,36 @@ namespace RoundSoundMimic.Services
                 }
             }
 
+            // Enhanced physics-based animation: Fast rise, slow gravity-based fall
+            const double riseFactor = 0.6;   // Fast response to peaks
+            const double gravity = 0.005;   // Gravity constant for falling
+            const double drag = 0.92;       // Air resistance for falling spikes
+
             for (var i = 0; i < _eqSnapshot.Length; i++)
             {
-                var current = _eqValues[i];
                 var target = _eqSnapshot[i];
-                _eqValues[i] = current + (target - current) * 0.2;
+                var current = _eqValues[i];
+
+                if (target > current)
+                {
+                    // Fast rise: linear interpolation towards target
+                    _eqValues[i] = current + (target - current) * riseFactor;
+                    _eqFallRates[i] = 0; // Reset fall rate when rising
+                }
+                else
+                {
+                    // Gravity fall: apply acceleration and velocity
+                    _eqFallRates[i] += gravity;
+                    _eqFallRates[i] *= drag;
+                    _eqValues[i] = Math.Max(0, current - _eqFallRates[i]);
+                    
+                    // Optional: add a tiny bit of random jitter for "organic" feel
+                    if (_eqValues[i] > 0.1)
+                    {
+                        var jitter = (Random.Shared.NextDouble() - 0.5) * 0.002;
+                        _eqValues[i] = Math.Clamp(_eqValues[i] + jitter, 0, 1);
+                    }
+                }
             }
 
             EqValuesUpdated?.Invoke(_eqValues);

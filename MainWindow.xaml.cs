@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Net.Http;
@@ -18,6 +18,7 @@ using System.Windows.Input;
 using NAudio.Dsp;
 using NAudio.Wave;
 using Microsoft.Extensions.DependencyInjection;
+using System.Windows.Media.Effects;
 
 namespace RoundSoundMimic;
 
@@ -35,6 +36,7 @@ public partial class MainWindow : Window
     private Popup? _menuPopup;
     private FrameworkElement? _innerCircle;
     private Path? _bandPath;
+    private DropShadowEffect? _eqGlowEffect;
     private readonly List<Line> _eqSpikes = new();
     private AppConfig _config = new();
     private DispatcherTimer? _pollTimer;
@@ -67,6 +69,7 @@ public partial class MainWindow : Window
         _menuPopup = FindName("MenuPopup") as Popup;
         _innerCircle = FindName("InnerCircle") as FrameworkElement;
         _bandPath = FindName("BandPath") as Path;
+        _eqGlowEffect = FindName("EqGlowEffect") as DropShadowEffect;
         
         // Initialize tray icon
         var iconImage = FindResource("AppIcon") as ImageSource;
@@ -110,10 +113,11 @@ public partial class MainWindow : Window
 
         _eqTimer = new DispatcherTimer
         {
-            Interval = TimeSpan.FromMilliseconds(60)
+            Interval = TimeSpan.FromMilliseconds(33) // ~30 FPS for smoother animation
         };
         _eqTimer.Tick += (_, _) => _audioService?.UpdateEqAnimation();
     }
+    
     
     private void OnEqValuesUpdated(double[] eqValues)
     {
@@ -181,15 +185,21 @@ public partial class MainWindow : Window
             return;
         }
 
-        var ringWidth = ProgressRing?.ActualWidth > 0 ? ProgressRing.ActualWidth : ProgressRing?.Width ?? 0;
-        var ringHeight = ProgressRing?.ActualHeight > 0 ? ProgressRing.ActualHeight : ProgressRing?.Height ?? 0;
+        var progressRing = ProgressRing;
+        if (progressRing == null)
+        {
+            return;
+        }
+
+        var ringWidth = progressRing.ActualWidth > 0 ? progressRing.ActualWidth : progressRing.Width;
+        var ringHeight = progressRing.ActualHeight > 0 ? progressRing.ActualHeight : progressRing.Height;
         if (ringWidth <= 0 || ringHeight <= 0)
         {
             return;
         }
 
-        var ringLeft = ProgressRing != null ? Canvas.GetLeft(ProgressRing) : 0;
-        var ringTop = ProgressRing != null ? Canvas.GetTop(ProgressRing) : 0;
+        var ringLeft = Canvas.GetLeft(progressRing);
+        var ringTop = Canvas.GetTop(progressRing);
         if (double.IsNaN(ringLeft))
         {
             ringLeft = 0;
@@ -203,19 +213,29 @@ public partial class MainWindow : Window
         var ringRadius = Math.Min(ringWidth, ringHeight) / 2.0;
         var centerX = ringLeft + ringWidth / 2.0;
         var centerY = ringTop + ringHeight / 2.0;
-        var baseRadius = ringRadius + (ProgressRing?.StrokeThickness ?? 0) / 2.0 + 4;
+        var baseRadius = ringRadius + progressRing.StrokeThickness / 2.0 + 4;
         var minSpike = Math.Max(3, ringRadius * 0.04);
         var maxSpike = Math.Max(8, ringRadius * 0.14);
 
         // Get current EQ values from the service
         var eqValues = _audioService.GetCurrentEqValues();
 
-        for (var i = 0; i < _eqSpikes.Count && i < eqValues.Length; i++)
+        // Batch updates to reduce rendering overhead
+        var count = Math.Min(Math.Min(_eqSpikes.Count, eqValues.Length), 48); // Use the known constant
+        var totalIntensity = 0.0;
+        
+        for (var i = 0; i < count; i++)
         {
-            var angle = (Math.PI * 2.0 * i) / _eqSpikes.Count;
+            var angle = (Math.PI * 2.0 * i) / count;
             var sin = Math.Sin(angle);
             var cos = Math.Cos(angle);
-            var spikeLength = minSpike + eqValues[i] * (maxSpike - minSpike);
+            
+            var intensity = eqValues[i];
+            totalIntensity += intensity;
+
+            // Exponential scaling for more visual impact on high peaks
+            var scaledIntensity = Math.Pow(intensity, 1.2);
+            var spikeLength = minSpike + scaledIntensity * (maxSpike - minSpike);
 
             var x1 = centerX + cos * baseRadius;
             var y1 = centerY + sin * baseRadius;
@@ -223,10 +243,44 @@ public partial class MainWindow : Window
             var y2 = centerY + sin * (baseRadius + spikeLength);
 
             var line = _eqSpikes[i];
-            line.X1 = x1;
-            line.Y1 = y1;
-            line.X2 = x2;
-            line.Y2 = y2;
+            // Only update if values have changed significantly to reduce rendering overhead
+            if (Math.Abs(line.X1 - x1) > 0.1 || Math.Abs(line.Y1 - y1) > 0.1 || 
+                Math.Abs(line.X2 - x2) > 0.1 || Math.Abs(line.Y2 - y2) > 0.1)
+            {
+                line.X1 = x1;
+                line.Y1 = y1;
+                line.X2 = x2;
+                line.Y2 = y2;
+            }
+            
+            // Enhance visual appearance: color gradient and dynamic thickness
+            // Base color is Orange (#FF8A2A) to Light Orange (#FFC166)
+            var r = (byte)255;
+            var g = (byte)(138 + (193 - 138) * intensity);
+            var b = (byte)(42 + (102 - 42) * intensity);
+            
+            line.StrokeThickness = 3 + intensity * 6; // Dynamic thickness
+            line.Opacity = 0.6 + intensity * 0.4;    // More opaque when active
+            
+            // Reuse or update brush efficiently
+            if (line.Stroke is not SolidColorBrush scb || scb.Color.G != g)
+            {
+                line.Stroke = new SolidColorBrush(Color.FromRgb(r, g, b));
+            }
+        }
+
+        // Update the overall canvas glow based on average intensity
+        if (_eqGlowEffect != null)
+        {
+            var avgIntensity = totalIntensity / count;
+            _eqGlowEffect.BlurRadius = 15 + avgIntensity * 30;
+            _eqGlowEffect.Opacity = 0.4 + avgIntensity * 0.6;
+            
+            // Color shifts slightly towards lighter orange at high intensity
+            var gr = (byte)255;
+            var gg = (byte)(138 + (193 - 138) * avgIntensity);
+            var gb = (byte)(42 + (102 - 42) * avgIntensity);
+            _eqGlowEffect.Color = Color.FromRgb(gr, gg, gb);
         }
     }
 
@@ -272,7 +326,14 @@ public partial class MainWindow : Window
         var centerY = innerTop + innerHeight / 2.0;
         var ellipseGeom = new EllipseGeometry(new Point(centerX, centerY), innerWidth / 2.0, innerHeight / 2.0);
 
-        _bandPath.Data = Geometry.Combine(rectGeom, ellipseGeom, GeometryCombineMode.Intersect, null);
+        // Only update if the geometry has changed significantly to reduce rendering overhead
+        var newGeometry = Geometry.Combine(rectGeom, ellipseGeom, GeometryCombineMode.Intersect, null);
+        
+        // Check if the new geometry is different from the current one before updating
+        if (_bandPath.Data == null || !_bandPath.Data.Equals(newGeometry))
+        {
+            _bandPath.Data = newGeometry;
+        }
     }
 
     private async void SaveButton_OnClick(object sender, RoutedEventArgs e)

@@ -37,12 +37,12 @@ public class MainViewModel : INotifyPropertyChanged
     private double _progress = 0;
     private ImageSource? _albumArtSource;
     private Geometry? _progressRingGeometry;
+    private DoubleCollection? _progressDashArray;
     private string _progressToolTip = "No playback";
     private string _ringBackgroundToolTip = "No playback";
     private bool _isPlayPauseEnabled = true;
     private bool _isPrevEnabled = true;
     private bool _isNextEnabled = true;
-    private string _losslessIndicator = "";
     private bool _isPaused = false;
 
     public string TitleText
@@ -87,6 +87,12 @@ public class MainViewModel : INotifyPropertyChanged
         set => SetProperty(ref _progressRingGeometry, value);
     }
 
+    public DoubleCollection? ProgressDashArray
+    {
+        get => _progressDashArray;
+        set => SetProperty(ref _progressDashArray, value);
+    }
+
     public string ProgressToolTip
     {
         get => _progressToolTip;
@@ -115,12 +121,6 @@ public class MainViewModel : INotifyPropertyChanged
     {
         get => _isNextEnabled;
         set => SetProperty(ref _isNextEnabled, value);
-    }
-
-    public string LosslessIndicator
-    {
-        get => _losslessIndicator;
-        set => SetProperty(ref _losslessIndicator, value);
     }
 
     public bool IsPaused
@@ -362,15 +362,9 @@ public class MainViewModel : INotifyPropertyChanged
                 ? "(unknown album)"
                 : nowPlaying.Album;
 
-            var container = (nowPlaying.GetType().GetProperty("Container")?.GetValue(nowPlaying) as string)?.ToLowerInvariant();
-            var lossless = container == "flac" || container == "wav";
-            var indicator = lossless ? "LOSSLESS" : string.Empty;
-
             TitleText = title.ToUpperInvariant();
             ArtistText = artists.ToUpperInvariant();
             AlbumText = album;
-            LosslessIndicator = indicator;
-            UpdateLosslessTextBlock(indicator);
             _lastPlaybackSeenUtc = DateTime.UtcNow;
             UpdateTrayNowPlayingText(title, artists);
             _currentRunTimeTicks = nowPlaying.RunTimeTicks ?? 0;
@@ -479,27 +473,19 @@ public class MainViewModel : INotifyPropertyChanged
     {
         UpdateProgressToolTip();
         var clamped = Math.Clamp(Progress, 0, 1);
-        if (clamped <= 0.001)
-        {
-            ProgressRingGeometry = new EllipseGeometry(new System.Windows.Point(300, 300), 300, 300);
-            return;
-        }
+        
+        // Total length of the ellipse stroke path is 2 * PI * radius
+        // For a 600x600 ellipse, the center of the 18-unit stroke is at radius 300
+        // Circumference = 2 * PI * 300 = 1884.955
+        // StrokeDashArray values are relative to StrokeThickness (18)
+        // Full circle in dash units = 1884.955 / 18 = 104.72
+        const double totalDashUnits = 104.719755; 
+        
+        var filledUnits = clamped * totalDashUnits;
+        var emptyUnits = totalDashUnits - filledUnits;
 
-        var radius = 300.0;
-        var circumference = 2 * Math.PI * radius;
-        var filled = circumference * clamped;
-        var empty = circumference - filled;
-
-        var thickness = 18.0;
-        if (thickness <= 0)
-        {
-            thickness = 1;
-        }
-
-        var filledArc = new PathGeometry();
-        var emptyArc = new PathGeometry();
-        // Simplified: use a single path for now
-        ProgressRingGeometry = new EllipseGeometry(new System.Windows.Point(300, 300), 300, 300);
+        // Update DashArray for the progress ring
+        ProgressDashArray = new DoubleCollection { filledUnits, emptyUnits > 0 ? emptyUnits : 0 };
     }
 
     private void UpdateProgressToolTip()

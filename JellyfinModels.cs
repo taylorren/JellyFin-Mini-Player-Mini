@@ -52,4 +52,7 @@ public sealed class JellyfinNowPlayingItem
 
     [JsonPropertyName("Artists")]
     public List<string>? Artists { get; set; }
+
+    [JsonPropertyName("Container")]
+    public string? Container { get; set; }
 }
