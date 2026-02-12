@@ -70,13 +70,19 @@ public class MainViewModel : INotifyPropertyChanged
                 }
                 if (_isMuted && value > 0)
                 {
-                    _isMuted = false;
+                    IsMuted = false;
                 }
             }
         }
     }
 
     public string VolumeToolTip => $"Volume: {Volume}%";
+
+    public bool IsMuted
+    {
+        get => _isMuted;
+        set => SetProperty(ref _isMuted, value);
+    }
 
     public ICommand MuteCommand { get; }
 
@@ -321,11 +327,11 @@ public class MainViewModel : INotifyPropertyChanged
             if (device != null)
             {
                 var volumeControl = device.AudioEndpointVolume;
-                volumeControl.Mute = !_isMuted;
-                _isMuted = volumeControl.Mute;
+                volumeControl.Mute = !IsMuted;
+                IsMuted = volumeControl.Mute;
                 
                 // Update volume display if unmuting
-                if (!_isMuted)
+                if (!IsMuted)
                 {
                     var currentVolume = (int)(volumeControl.MasterVolumeLevelScalar * 100);
                     _isUpdatingVolume = true;
@@ -731,7 +737,7 @@ public class MainViewModel : INotifyPropertyChanged
                     _isUpdatingVolume = true;
                     Volume = currentVolume;
                     _isUpdatingVolume = false;
-                    _isMuted = currentMuted;
+                    IsMuted = currentMuted;
                 }
             }
         }

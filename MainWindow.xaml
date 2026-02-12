@@ -369,7 +369,14 @@
                                 Command="{Binding MuteCommand}"
                                 ToolTip="{Binding VolumeToolTip}">
                             <Viewbox Width="16" Height="16">
-                                <Path Fill="White" Data="{Binding Volume, Converter={StaticResource VolumeToIconConverter}}" />
+                                <Path Fill="White">
+                                    <Path.Data>
+                                        <MultiBinding Converter="{StaticResource VolumeToIconConverter}">
+                                            <Binding Path="Volume" />
+                                            <Binding Path="IsMuted" />
+                                        </MultiBinding>
+                                    </Path.Data>
+                                </Path>
                             </Viewbox>
                         </Button>
                         <Slider x:Name="VolumeSlider"
