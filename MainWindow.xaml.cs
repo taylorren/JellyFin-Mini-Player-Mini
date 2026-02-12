@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Net.Http;
@@ -448,7 +448,9 @@ public partial class MainWindow : Window
 
     private void CloseButton_OnClick(object sender, RoutedEventArgs e)
     {
-        // This will now be handled by the ViewModel's CloseConfigCommand
-        _viewModel?.CloseConfigExecute();
+        if (_configPopup is not null)
+        {
+            _configPopup.IsOpen = false;
+        }
     }
 }

@@ -93,6 +93,38 @@ namespace RoundSoundMimic.Services
             return response.IsSuccessStatusCode;
         }
 
+        public async Task<JellyfinNowPlayingItem?> FetchItemWithUserDataAsync(AppConfig config, string itemId)
+        {
+            if (string.IsNullOrWhiteSpace(config.ServerUrl) || string.IsNullOrWhiteSpace(config.ApiKey) || string.IsNullOrWhiteSpace(itemId))
+            {
+                return null;
+            }
+
+            var baseUrl = config.ServerUrl.Trim().TrimEnd('/');
+            var url = $"{baseUrl}/Items/{itemId}?enableUserData=true";
+            if (!string.IsNullOrWhiteSpace(config.UserId))
+            {
+                url += $"&userId={config.UserId}";
+            }
+
+            using var request = new HttpRequestMessage(HttpMethod.Get, url);
+            request.Headers.Add("X-Emby-Token", config.ApiKey);
+
+            using var response = await Http.SendAsync(request).ConfigureAwait(false);
+            if (!response.IsSuccessStatusCode)
+            {
+                return null;
+            }
+
+            var json = await response.Content.ReadAsStringAsync().ConfigureAwait(false);
+            var item = JsonSerializer.Deserialize<JellyfinNowPlayingItem>(json, new JsonSerializerOptions
+            {
+                PropertyNameCaseInsensitive = true
+            });
+
+            return item;
+        }
+
         public async Task<JellyfinSession?> EnsureActiveSessionIdAsync(AppConfig config, string? activeSessionId)
         {
             if (!string.IsNullOrWhiteSpace(activeSessionId))

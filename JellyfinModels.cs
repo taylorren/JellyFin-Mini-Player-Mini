@@ -55,4 +55,13 @@ public sealed class JellyfinNowPlayingItem
 
     [JsonPropertyName("Container")]
     public string? Container { get; set; }
+
+    [JsonPropertyName("UserData")]
+    public JellyfinUserData? UserData { get; set; }
+}
+
+public sealed class JellyfinUserData
+{
+    [JsonPropertyName("PlayCount")]
+    public int? PlayCount { get; set; }
 }

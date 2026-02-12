@@ -44,6 +44,13 @@ public class MainViewModel : INotifyPropertyChanged
     private bool _isPrevEnabled = true;
     private bool _isNextEnabled = true;
     private bool _isPaused = false;
+    private string _playCountText = "";
+
+    public string PlayCountText
+    {
+        get => _playCountText;
+        set => SetProperty(ref _playCountText, value);
+    }
 
     public string TitleText
     {
@@ -350,6 +357,7 @@ public class MainViewModel : INotifyPropertyChanged
                 Progress = 0;
                 UpdateTrayNowPlayingText("RoundSound Mimic", string.Empty);
                 StatusText = "No active session";
+                PlayCountText = "";
                 _lastPlaybackSeenUtc = DateTime.MinValue;
                 return;
             }
@@ -372,6 +380,22 @@ public class MainViewModel : INotifyPropertyChanged
             var artworkKey = BuildArtworkKey(nowPlaying);
             var showBalloon = !string.Equals(artworkKey, _lastArtworkKey, StringComparison.Ordinal);
             await LoadAlbumArtAsync(_config, nowPlaying);
+            if (!string.IsNullOrWhiteSpace(nowPlaying.Id))
+            {
+                var itemWithData = await _jellyfinService.FetchItemWithUserDataAsync(_config, nowPlaying.Id);
+                if (itemWithData?.UserData?.PlayCount is int playCount)
+                {
+                    PlayCountText = $"Played {playCount} time{(playCount == 1 ? "" : "s")}";
+                }
+                else
+                {
+                    PlayCountText = "";
+                }
+            }
+            else
+            {
+                PlayCountText = "";
+            }
             if (showBalloon)
             {
                 ShowTrayBalloon(title, artists);
@@ -385,6 +409,7 @@ public class MainViewModel : INotifyPropertyChanged
             TitleText = "(error)";
             ArtistText = string.Empty;
             AlbumText = string.Empty;
+            PlayCountText = "";
             AlbumArtSource = null;
             _currentRunTimeTicks = 0;
             _currentPositionTicks = 0;
