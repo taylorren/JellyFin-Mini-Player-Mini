@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Net.Http;
+using System.Text;
 using System.Text.Json;
 using System.Threading.Tasks;
 
@@ -93,6 +94,25 @@ namespace RoundSoundMimic.Services
             return response.IsSuccessStatusCode;
         }
 
+        public async Task<bool> SendCommandAsync(AppConfig config, string name, object? arguments, string sessionId)
+        {
+            if (string.IsNullOrWhiteSpace(config.ServerUrl) || string.IsNullOrWhiteSpace(sessionId)) return false;
+
+            var baseUrl = config.ServerUrl.Trim().TrimEnd('/');
+            var url = $"{baseUrl}/Sessions/{sessionId}/Command";
+
+            var body = new { Name = name, Arguments = arguments };
+            var json = System.Text.Json.JsonSerializer.Serialize(body);
+            var content = new StringContent(json, System.Text.Encoding.UTF8, "application/json");
+
+            using var request = new HttpRequestMessage(HttpMethod.Post, url);
+            request.Headers.Add("X-Emby-Token", config.ApiKey);
+            request.Content = content;
+
+            using var response = await Http.SendAsync(request).ConfigureAwait(false);
+            return response.IsSuccessStatusCode;
+        }
+
         public async Task<JellyfinNowPlayingItem?> FetchItemWithUserDataAsync(AppConfig config, string itemId)
         {
             if (string.IsNullOrWhiteSpace(config.ServerUrl) || string.IsNullOrWhiteSpace(config.ApiKey) || string.IsNullOrWhiteSpace(itemId))
@@ -144,21 +164,9 @@ namespace RoundSoundMimic.Services
             }
         }
 
-        public async Task<bool> SetVolumeAsync(AppConfig config, string sessionId, int volume)
+        public async Task<bool> SetVolumeAsync(AppConfig config, string sessionId, int volume, bool isMuted)
         {
-            if (string.IsNullOrWhiteSpace(config.ServerUrl) || string.IsNullOrWhiteSpace(sessionId))
-            {
-                return false;
-            }
-
-            var baseUrl = config.ServerUrl.Trim().TrimEnd('/');
-            var url = $"{baseUrl}/Sessions/{sessionId}/Playing?Volume={volume}";
-
-            using var request = new HttpRequestMessage(HttpMethod.Post, url);
-            request.Headers.Add("X-Emby-Token", config.ApiKey);
-
-            using var response = await Http.SendAsync(request).ConfigureAwait(false);
-            return response.IsSuccessStatusCode;
+            return await SendCommandAsync(config, "SetVolume", new { Volume = volume }, sessionId);
         }
     }
 }

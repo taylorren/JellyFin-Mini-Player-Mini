@@ -66,7 +66,7 @@ public class MainViewModel : INotifyPropertyChanged
                 if (!_isUpdatingVolume)
                 {
                     _lastManualVolumeChangeUtc = DateTime.UtcNow;
-                    _ = SetVolumeAsync(value);
+                    _ = SetVolumeAsync(value, _isMuted);
                 }
                 if (_isMuted && value > 0)
                 {
@@ -273,32 +273,9 @@ public class MainViewModel : INotifyPropertyChanged
         SaveConfigCommand = new RelayCommand(SaveConfigExecute);
         CloseConfigCommand = new RelayCommand(CloseConfigExecute);
         MuteCommand = new RelayCommand(MuteExecute);
-
-        // Initialize volume from system
-        InitializeSystemVolume();
     }
 
-    private void InitializeSystemVolume()
-    {
-        try
-        {
-            using var enumerator = new MMDeviceEnumerator();
-            var device = enumerator.GetDefaultAudioEndpoint(DataFlow.Render, Role.Multimedia);
-            if (device != null)
-            {
-                var volumeControl = device.AudioEndpointVolume;
-                var currentVolume = (int)(volumeControl.MasterVolumeLevelScalar * 100);
-                _volume = currentVolume;
-                _volumeBeforeMute = currentVolume;
-                _isMuted = volumeControl.Mute;
-                OnPropertyChanged(nameof(Volume));
-            }
-        }
-        catch (Exception ex)
-        {
-            System.Diagnostics.Debug.WriteLine($"Failed to get system volume: {ex.Message}");
-        }
-    }
+
 
     public event PropertyChangedEventHandler? PropertyChanged;
 
@@ -454,7 +431,7 @@ public class MainViewModel : INotifyPropertyChanged
             var nowPlaying = session?.NowPlayingItem;
             _activeSessionId = session?.Id;
             IsPaused = session?.PlayState?.IsPaused ?? false;
-            UpdateVolumeFromSession(session?.PlayState?.VolumeLevel);
+            UpdateVolumeFromSession(session);
             UpdatePlayPauseIcon();
 
             if (nowPlaying is null)
@@ -713,7 +690,7 @@ public class MainViewModel : INotifyPropertyChanged
         StatusText = ok ? $"Command sent: {command}" : $"Command failed";
     }
 
-    private async Task SetVolumeAsync(int volume)
+    private async Task SetVolumeAsync(int volume, bool isMuted)
     {
         await Task.Run(() =>
         {
@@ -725,6 +702,7 @@ public class MainViewModel : INotifyPropertyChanged
                 {
                     var volumeControl = device.AudioEndpointVolume;
                     volumeControl.MasterVolumeLevelScalar = volume / 100.0f;
+                    volumeControl.Mute = isMuted;
                 }
             }
             catch (Exception ex)
@@ -735,10 +713,15 @@ public class MainViewModel : INotifyPropertyChanged
         });
     }
 
-    internal void UpdateVolumeFromSession(int? volume)
+    internal void UpdateVolumeFromSession(JellyfinSession? session)
     {
-        // Since we now control system volume, don't update volume from Jellyfin session
-        // The volume display should reflect system volume, not Jellyfin volume
+        if (session?.PlayState?.VolumeLevel.HasValue == true && DateTime.UtcNow - _lastManualVolumeChangeUtc > TimeSpan.FromSeconds(2))
+        {
+            _isUpdatingVolume = true;
+            Volume = session.PlayState.VolumeLevel.Value;
+            _isUpdatingVolume = false;
+            _isMuted = session.PlayState.IsMuted ?? false;
+        }
     }
 
     private async Task<string?> EnsureActiveSessionIdAsync()
