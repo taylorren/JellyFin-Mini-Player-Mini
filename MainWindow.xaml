@@ -5,7 +5,7 @@
         xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
         xmlns:local="clr-namespace:RoundSoundMimic"
         mc:Ignorable="d"
-        Title="RoundSound Mimic" Height="893" Width="1325" MinWidth="760" MinHeight="520"
+        Title="RoundSound Mimic" Height="720" Width="720" MinWidth="600" MinHeight="600"
         Background="Transparent"
         WindowStyle="None"
         ResizeMode="NoResize"
