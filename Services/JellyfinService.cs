@@ -45,8 +45,21 @@ namespace RoundSoundMimic.Services
                 PropertyNameCaseInsensitive = true
             }) ?? new List<JellyfinSession>();
 
-            var session = sessions.Find(s => s.NowPlayingItem is not null &&
-                (string.IsNullOrWhiteSpace(config.UserId) || string.Equals(s.UserId, config.UserId, StringComparison.OrdinalIgnoreCase)));
+            // The server returns sessions in arbitrary order. When more than one
+            // session reports a NowPlayingItem (e.g. a paused browser tab plus the
+            // phone that is really playing), picking the first one makes the widget
+            // show cover/title/artist of the WRONG session. The session that is
+            // actually playing is the most recently active one, and an actively
+            // playing session outranks a paused one.
+            IEnumerable<JellyfinSession> candidates = sessions.Where(s =>
+                s.NowPlayingItem is not null &&
+                (string.IsNullOrWhiteSpace(config.UserId) ||
+                 string.Equals(s.UserId, config.UserId, StringComparison.OrdinalIgnoreCase)));
+
+            var session = candidates
+                .OrderByDescending(s => s.PlayState?.IsPaused == false)
+                .ThenByDescending(s => s.LastActivityDate ?? DateTime.MinValue)
+                .FirstOrDefault();
 
             return session;
         }
@@ -176,6 +189,42 @@ namespace RoundSoundMimic.Services
         public async Task<bool> SetVolumeAsync(AppConfig config, string sessionId, int volume, bool isMuted)
         {
             return await SendCommandAsync(config, "SetVolume", new { Volume = volume }, sessionId);
+        }
+
+        public async Task<bool> SeekAsync(AppConfig config, string sessionId, long positionTicks)
+        {
+            if (string.IsNullOrWhiteSpace(config.ServerUrl) || string.IsNullOrWhiteSpace(sessionId)) return false;
+
+            var baseUrl = config.ServerUrl.Trim().TrimEnd('/');
+            var url = $"{baseUrl}/Sessions/{sessionId}/Playing/Seek?seekPositionTicks={positionTicks}";
+
+            using var request = new HttpRequestMessage(HttpMethod.Post, url);
+            request.Headers.Add("Authorization", BuildAuthorizationHeader(config));
+
+            using var response = await Http.SendAsync(request).ConfigureAwait(false);
+            return response.IsSuccessStatusCode;
+        }
+
+        public async Task<bool> SetFavoriteAsync(AppConfig config, string itemId, bool isFavorite)
+        {
+            if (string.IsNullOrWhiteSpace(config.ServerUrl) || string.IsNullOrWhiteSpace(config.ApiKey) || string.IsNullOrWhiteSpace(itemId))
+            {
+                return false;
+            }
+
+            var baseUrl = config.ServerUrl.Trim().TrimEnd('/');
+            var url = $"{baseUrl}/UserFavoriteItems/{itemId}";
+            if (!string.IsNullOrWhiteSpace(config.UserId))
+            {
+                url += $"?userId={Uri.EscapeDataString(config.UserId)}";
+            }
+
+            var method = isFavorite ? HttpMethod.Post : HttpMethod.Delete;
+            using var request = new HttpRequestMessage(method, url);
+            request.Headers.Add("Authorization", BuildAuthorizationHeader(config));
+
+            using var response = await Http.SendAsync(request).ConfigureAwait(false);
+            return response.IsSuccessStatusCode;
         }
     }
 }

@@ -16,6 +16,14 @@ public sealed class JellyfinSession
 
     [JsonPropertyName("PlayState")]
     public JellyfinPlayState? PlayState { get; set; }
+
+    /// <summary>
+    /// UTC timestamp of the most recent activity reported by the client for this
+    /// session. Used to pick the session that is actually playing when several
+    /// sessions have a NowPlayingItem at the same time.
+    /// </summary>
+    [JsonPropertyName("LastActivityDate")]
+    public DateTime? LastActivityDate { get; set; }
 }
 
 public sealed class JellyfinPlayState
@@ -85,4 +93,7 @@ public sealed class JellyfinUserData
 {
     [JsonPropertyName("PlayCount")]
     public int? PlayCount { get; set; }
+
+    [JsonPropertyName("IsFavorite")]
+    public bool? IsFavorite { get; set; }
 }

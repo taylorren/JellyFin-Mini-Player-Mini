@@ -10,6 +10,8 @@ namespace RoundSoundMimic.Services
         Task<JellyfinSession?> EnsureActiveSessionIdAsync(AppConfig config, string? activeSessionId);
         Task<JellyfinNowPlayingItem?> FetchItemWithUserDataAsync(AppConfig config, string itemId);
         Task<bool> SetVolumeAsync(AppConfig config, string sessionId, int volume, bool isMuted);
+        Task<bool> SeekAsync(AppConfig config, string sessionId, long positionTicks);
         Task<bool> SendCommandAsync(AppConfig config, string name, object? arguments, string sessionId);
+        Task<bool> SetFavoriteAsync(AppConfig config, string itemId, bool isFavorite);
     }
 }

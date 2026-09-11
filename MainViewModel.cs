@@ -29,6 +29,9 @@ public class MainViewModel : INotifyPropertyChanged
     private long _currentRunTimeTicks;
     private long _currentPositionTicks;
     private bool _isFetching;
+    // Set when a manual (button-triggered) fetch arrives while another fetch is
+    // already in flight, so the manual refresh is replayed instead of dropped.
+    private bool _pendingManualFetch;
     private DateTime _lastPlaybackSeenUtc = DateTime.MinValue;
 
     // Properties for binding
@@ -54,6 +57,56 @@ public class MainViewModel : INotifyPropertyChanged
     private bool _isMuted = false;
     private bool _isUpdatingVolume = false;
     private DateTime _lastManualVolumeChangeUtc = DateTime.MinValue;
+    private string? _currentItemId;
+    private bool _isFavorite = false;
+    private double _seekPercent = 0;
+    private bool _isUpdatingSeek = false;
+    private DateTime _lastManualSeekUtc = DateTime.MinValue;
+    private int _seekRequestGeneration = 0;
+
+    // Local playback-position tracking. While a track plays we avoid polling the
+    // server every second; instead a lightweight timer extrapolates the position
+    // from wall-clock time and only issues a network request at a track boundary
+    // (song finished) or when the user takes a manual action (Next/Prev/Seek).
+    private DispatcherTimer? _playbackTimer;
+    private bool _isTrackingPlayback = false;
+    private long _localRunTimeTicks = 0;
+    private long _localPositionTicks = 0;
+    private DateTime _lastTickUtc = DateTime.MinValue;
+    private DateTime _lastFetchUtc = DateTime.MinValue;
+    // While set, the server is expected to report a track change imminently (a song
+    // just finished naturally); the timer fetches quickly instead of dropping to the
+    // slow idle heartbeat, so the next song's cover/title appear without delay.
+    private bool _isAwaitingTrackTransition;
+    private DateTime _trackTransitionStartedUtc = DateTime.MinValue;
+    // The item that was playing when the transition retry was armed; the retry is
+    // resolved once the server reports a different item (the next song).
+    private string? _transitionFromItemId;
+
+    /// <summary>Interval used for the idle heartbeat (nothing currently playing).</summary>
+    private const double IdlePollIntervalSeconds = 30;
+    /// <summary>Debounce window for scrubbing the seek bar before sending a seek request.</summary>
+    private const int SeekDebounceMs = 350;
+    /// <summary>
+    /// How often (while playing) the server session metadata is revalidated to make
+    /// sure the displayed cover/title/artist still match what is really playing.
+    /// </summary>
+    private const int RevalidateIntervalSeconds = 15;
+
+    /// <summary>Poll cadence used after Next/Prev while waiting for the target client to switch songs.</summary>
+    private const int PostCommandRefreshPollMs = 200;
+    /// <summary>Upper bound for the post-command wait before falling back to a full refresh.</summary>
+    private const int PostCommandRefreshTimeoutMs = 2000;
+
+    /// <summary>
+    /// Retry cadence while waiting for the server to report the next track after a
+    /// song finishes naturally. The client's own report of the switch lags the local
+    /// extrapolation by a moment, so the first boundary fetch usually still sees the
+    /// old track (or a transient null gap) and must be retried quickly.
+    /// </summary>
+    private const double TrackTransitionPollSeconds = 2;
+    /// <summary>How long the quick transition retry runs before reverting to the idle heartbeat.</summary>
+    private const double TrackTransitionTimeoutSeconds = 30;
 
     public int Volume
     {
@@ -85,6 +138,48 @@ public class MainViewModel : INotifyPropertyChanged
     }
 
     public ICommand MuteCommand { get; }
+
+    public bool IsFavorite
+    {
+        get => _isFavorite;
+        set => SetProperty(ref _isFavorite, value);
+    }
+
+    public ICommand FavoriteCommand { get; }
+
+    /// <summary>
+    /// User-accessible seek position as a percentage (0-100).
+    /// Dragging the slider updates this property and triggers a seek command;
+    /// polling updates it (guarded by _isUpdatingSeek) to reflect server position.
+    /// </summary>
+    public double SeekPercent
+    {
+        get => _seekPercent;
+        set
+        {
+            if (SetProperty(ref _seekPercent, value))
+            {
+                OnPropertyChanged(nameof(SeekToolTip));
+                if (!_isUpdatingSeek)
+                {
+                    _lastManualSeekUtc = DateTime.UtcNow;
+                    _ = DebouncedSeekAsync(value);
+                }
+            }
+        }
+    }
+
+    public string SeekToolTip
+    {
+        get
+        {
+            if (_currentRunTimeTicks <= 0) return "No playback";
+            var posTicks = (long)(Math.Clamp(_seekPercent, 0, 100) / 100.0 * _currentRunTimeTicks);
+            var pos = TimeSpan.FromTicks(posTicks);
+            var total = TimeSpan.FromTicks(_currentRunTimeTicks);
+            return $"{FormatTime(pos)} / {FormatTime(total)}";
+        }
+    }
 
     public string PlayCountText
     {
@@ -279,6 +374,7 @@ public class MainViewModel : INotifyPropertyChanged
         SaveConfigCommand = new RelayCommand(SaveConfigExecute);
         CloseConfigCommand = new RelayCommand(CloseConfigExecute);
         MuteCommand = new RelayCommand(MuteExecute);
+        FavoriteCommand = new RelayCommand(ToggleFavoriteExecute);
     }
 
 
@@ -355,6 +451,31 @@ public class MainViewModel : INotifyPropertyChanged
         }
     }
 
+    public async void ToggleFavoriteExecute()
+    {
+        if (string.IsNullOrWhiteSpace(_currentItemId))
+        {
+            StatusText = "No track to favorite";
+            return;
+        }
+
+        _config.ServerUrl = ServerUrlText.Trim();
+        _config.ApiKey = ApiKeyText.Trim();
+        _config.UserId = UserIdText.Trim();
+
+        var newValue = !IsFavorite;
+        var ok = await _jellyfinService.SetFavoriteAsync(_config, _currentItemId, newValue);
+        if (ok)
+        {
+            IsFavorite = newValue;
+            StatusText = newValue ? "Added to favorites" : "Removed from favorites";
+        }
+        else
+        {
+            StatusText = "Favorite update failed";
+        }
+    }
+
     public void OpenConfigExecute()
     {
         // This needs to be handled in the View, as it opens a popup
@@ -379,7 +500,8 @@ public class MainViewModel : INotifyPropertyChanged
 
     public async void FetchExecute()
     {
-        await FetchNowPlayingAsync();
+        // Manual refresh from the (debug) fetch button: skip the grace window.
+        await FetchNowPlayingAsync(isManualAction: true);
     }
 
     public async Task SaveConfigAsync()
@@ -420,13 +542,43 @@ public class MainViewModel : INotifyPropertyChanged
     {
         if (_isFetching)
         {
+            // A fetch is already running. A button-triggered refresh must not be
+            // silently dropped (otherwise pressing Next during a revalidation
+            // leaves the UI stale until the next periodic check); remember it and
+            // replay when the in-flight fetch completes.
+            if (isManualAction)
+            {
+                _pendingManualFetch = true;
+            }
             return;
         }
 
         _isFetching = true;
+        _lastFetchUtc = DateTime.UtcNow;
         IsPlayPauseEnabled = false;
         StatusText = "Fetching...";
 
+        try
+        {
+            await FetchNowPlayingCoreAsync(isManualAction);
+        }
+        finally
+        {
+            _isFetching = false;
+            IsPlayPauseEnabled = true;
+
+            // Replay a manual refresh that arrived while this fetch was running
+            // (guard against unbounded loops: at most one replay per completion).
+            if (_pendingManualFetch && !_isFetching)
+            {
+                _pendingManualFetch = false;
+                _ = FetchNowPlayingAsync(isManualAction: true);
+            }
+        }
+    }
+
+    private async Task FetchNowPlayingCoreAsync(bool isManualAction)
+    {
         try
         {
             _config.ServerUrl = ServerUrlText.Trim();
@@ -435,6 +587,10 @@ public class MainViewModel : INotifyPropertyChanged
 
             var session = await FetchActiveSessionAsync(_config);
             var nowPlaying = session?.NowPlayingItem;
+            // If a natural track-end retry is pending, resolve it once the server
+            // reports a different item than the one that was playing before.
+            ResolveTrackTransitionIfChanged(nowPlaying?.Id);
+            _currentItemId = nowPlaying?.Id;
             _activeSessionId = session?.Id;
             IsPaused = session?.PlayState?.IsPaused ?? false;
             UpdateVolumeFromSession(session);
@@ -445,7 +601,9 @@ public class MainViewModel : INotifyPropertyChanged
                 var now = DateTime.UtcNow;
                 // If we have seen playback very recently, this may be a brief gap
                 // (for example when skipping tracks). Don't clear the UI immediately.
-                if (now - _lastPlaybackSeenUtc < TimeSpan.FromSeconds(6))
+                // A user-initiated refresh (Next/Prev/Play/Pause) skips the grace
+                // window so the UI updates to the new state right away.
+                if (!isManualAction && now - _lastPlaybackSeenUtc < TimeSpan.FromSeconds(6))
                 {
                     StatusText = "Waiting for update...";
                     return;
@@ -455,8 +613,14 @@ public class MainViewModel : INotifyPropertyChanged
                 ArtistText = string.Empty;
                 AlbumText = string.Empty;
                 AlbumArtSource = null;
+                _currentItemId = null;
+                IsFavorite = false;
                 _currentRunTimeTicks = 0;
                 _currentPositionTicks = 0;
+                _localRunTimeTicks = 0;
+                _localPositionTicks = 0;
+                _isTrackingPlayback = false;
+                UpdateSeekFromPosition(0, 0);
                 Progress = 0;
                 UpdateTrayNowPlayingText("RoundSound Mimic", string.Empty);
                 StatusText = "No active session";
@@ -481,24 +645,49 @@ public class MainViewModel : INotifyPropertyChanged
             UpdateTrayNowPlayingText(title, artists);
             _currentRunTimeTicks = nowPlaying.RunTimeTicks ?? 0;
             _currentPositionTicks = session?.PlayState?.PositionTicks ?? 0;
+            // Re-arm local position tracking. Only track when there is remaining
+            // time on a known-duration item, so an already-finished/stalled item
+            // doesn't trigger a hot-loop of boundary fetches.
+            _localRunTimeTicks = _currentRunTimeTicks;
+            _localPositionTicks = Math.Min(_currentPositionTicks, Math.Max(0, _currentRunTimeTicks));
+            _isTrackingPlayback = _localRunTimeTicks > 0 && _localPositionTicks < _localRunTimeTicks;
+            if (_isTrackingPlayback)
+            {
+                _lastTickUtc = DateTime.UtcNow;
+            }
+            _currentPositionTicks = _localPositionTicks;
             var artworkKey = BuildArtworkKey(nowPlaying);
             var showBalloon = !string.Equals(artworkKey, _lastNotifiedTrackKey, StringComparison.Ordinal);
-            await LoadAlbumArtAsync(_config, nowPlaying);
-            if (!string.IsNullOrWhiteSpace(nowPlaying.Id))
+
+            // Artwork download and user-data (play count / favorite) are independent
+            // of each other: run them concurrently instead of serially so the cover
+            // and favorite state arrive in one round-trip time, not two.
+            var artworkTask = LoadAlbumArtAsync(_config, nowPlaying);
+            var userDataTask = string.IsNullOrWhiteSpace(nowPlaying.Id)
+                ? Task.CompletedTask
+                : _jellyfinService.FetchItemWithUserDataAsync(_config, nowPlaying.Id);
+            await Task.WhenAll(artworkTask, userDataTask).ConfigureAwait(true);
+
+            if (userDataTask is Task<JellyfinNowPlayingItem?> completedUserData)
             {
-                var itemWithData = await _jellyfinService.FetchItemWithUserDataAsync(_config, nowPlaying.Id);
-                if (itemWithData?.UserData?.PlayCount is int playCount)
+                var itemWithData = await completedUserData.ConfigureAwait(true);
+                if (itemWithData?.UserData is JellyfinUserData userData)
                 {
-                    PlayCountText = $"Played {playCount} time{(playCount == 1 ? "" : "s")}";
-                }
-                else
-                {
-                    PlayCountText = "";
+                    if (userData.PlayCount is int playCount)
+                    {
+                        PlayCountText = $"Played {playCount} time{(playCount == 1 ? "" : "s")}";
+                    }
+                    else
+                    {
+                        PlayCountText = "";
+                    }
+                    IsFavorite = userData.IsFavorite ?? false;
                 }
             }
             else
             {
                 PlayCountText = "";
+                IsFavorite = false;
             }
             FormatText = nowPlaying.MediaStreams?.FirstOrDefault(s => s.Type == "Audio")?.Codec?.ToUpperInvariant() ?? nowPlaying.Container?.ToUpperInvariant() ?? "";
             if (showBalloon)
@@ -508,6 +697,7 @@ public class MainViewModel : INotifyPropertyChanged
             }
             Progress = GetProgress(session);
             UpdateProgressRing();
+            UpdateSeekFromPosition(_currentPositionTicks, _currentRunTimeTicks);
             StatusText = "Updated";
         }
         catch (Exception ex)
@@ -524,10 +714,84 @@ public class MainViewModel : INotifyPropertyChanged
             UpdateTrayNowPlayingText("RoundSound Mimic", string.Empty);
             StatusText = ex.Message;
         }
-        finally
+    }
+
+    /// <summary>
+    /// Cheap revalidation while a track plays: fetches session metadata only (no
+    /// artwork / user-data round trips) and checks whether the item the server
+    /// reports still matches what the UI is displaying. Playback can change tracks
+    /// inside the Jellyfin client itself; without this check the widget keeps
+    /// showing the previous song's cover, title and artist until its own local
+    /// extrapolation hits the track boundary. A changed item triggers a full
+    /// refresh; a matching item only corrects local position drift (e.g. after a
+    /// seek done in the client or system sleep).
+    /// </summary>
+    private async Task RevalidateNowPlayingAsync()
+    {
+        try
         {
-            IsPlayPauseEnabled = true;
-            _isFetching = false;
+            _config.ServerUrl = ServerUrlText.Trim();
+            _config.ApiKey = ApiKeyText.Trim();
+            _config.UserId = UserIdText.Trim();
+
+            var session = await FetchActiveSessionAsync(_config).ConfigureAwait(true);
+            var nowPlaying = session?.NowPlayingItem;
+            if (nowPlaying is null)
+            {
+                // Playback may have just ended externally; let the normal fetch
+                // path (with its grace window) clear the UI.
+                await FetchNowPlayingAsync();
+                return;
+            }
+
+            var serverItemId = nowPlaying.Id;
+            if (!string.IsNullOrWhiteSpace(serverItemId) &&
+                !string.Equals(serverItemId, _currentItemId, StringComparison.OrdinalIgnoreCase))
+            {
+                // The server is playing a different song than the UI shows -> full
+                // refresh so cover, title, artist, album, favorite etc. match.
+                await FetchNowPlayingAsync(isManualAction: true);
+                return;
+            }
+
+            // Same item: correct local position drift only. Skip while the user is
+            // scrubbing so the thumb doesn't fight them.
+            if (DateTime.UtcNow - _lastManualSeekUtc >= TimeSpan.FromSeconds(2))
+            {
+                _currentRunTimeTicks = nowPlaying.RunTimeTicks ?? _currentRunTimeTicks;
+                _localRunTimeTicks = _currentRunTimeTicks;
+                _localPositionTicks = Math.Min(session?.PlayState?.PositionTicks ?? _localPositionTicks,
+                    Math.Max(0, _localRunTimeTicks));
+                _currentPositionTicks = _localPositionTicks;
+                if (_localRunTimeTicks > 0)
+                {
+                    _isTrackingPlayback = _localPositionTicks < _localRunTimeTicks;
+                }
+                _lastTickUtc = DateTime.UtcNow;
+                SyncUiFromLocalPosition();
+            }
+        }
+        catch (Exception ex)
+        {
+            TryLog("RevalidateNowPlayingAsync", ex);
+        }
+    }
+
+    /// <summary>
+    /// Cheap session-metadata check used after transport commands so a changed item
+    /// or play state is noticed without the full artwork / user-data pipeline.
+    /// Returns the session the server currently reports, or null when nothing plays.
+    /// </summary>
+    private async Task<JellyfinSession?> PeekSessionSnapshotAsync()
+    {
+        try
+        {
+            return await FetchActiveSessionAsync(_config).ConfigureAwait(true);
+        }
+        catch (Exception ex)
+        {
+            TryLog("PeekSessionSnapshotAsync", ex);
+            return null;
         }
     }
 
@@ -559,10 +823,12 @@ public class MainViewModel : INotifyPropertyChanged
 
     private async Task LoadAlbumArtAsync(AppConfig config, JellyfinNowPlayingItem item)
     {
-        var bytes = await _jellyfinService.GetArtworkBytesAsync(config, item);
+        var bytes = await _jellyfinService.GetArtworkBytesAsync(config, item).ConfigureAwait(true);
         if (bytes is null || bytes.Length == 0)
         {
-            AlbumArtSource = null;
+            // Keep the previous cover when the new one can't be fetched. Blanking
+            // the art here would leave the widget showing a new title with the
+            // previous (or no) cover, which reads as a cover/title mismatch.
             StatusText = "Artwork not available";
             return;
         }
@@ -581,7 +847,7 @@ public class MainViewModel : INotifyPropertyChanged
         }
         catch
         {
-            AlbumArtSource = null;
+            // Same as above: a decode failure shouldn't blank the current cover.
             StatusText = "Artwork load failed";
             return;
         }
@@ -598,6 +864,25 @@ public class MainViewModel : INotifyPropertyChanged
         var position = session?.PlayState?.PositionTicks ?? 0;
         var progress = position / (double)item.RunTimeTicks.Value;
         return Math.Clamp(progress, 0, 1);
+    }
+
+    /// <summary>
+    /// Reflects the server-side playback position on the seek slider, without
+    /// re-triggering a seek. Suppresses updates shortly after a manual seek so the
+    /// thumb doesn't fight the user while they are scrubbing.
+    /// </summary>
+    private void UpdateSeekFromPosition(long positionTicks, long runTimeTicks)
+    {
+        // Don't overwrite the thumb while the user is actively scrubbing.
+        if (DateTime.UtcNow - _lastManualSeekUtc < TimeSpan.FromSeconds(2))
+        {
+            return;
+        }
+
+        var percent = runTimeTicks > 0 ? Math.Clamp(positionTicks / (double)runTimeTicks * 100.0, 0, 100) : 0.0;
+        _isUpdatingSeek = true;
+        SeekPercent = percent;
+        _isUpdatingSeek = false;
     }
 
     private void UpdateProgressRing()
@@ -696,6 +981,61 @@ public class MainViewModel : INotifyPropertyChanged
         StatusText = ok ? $"Command sent: {command}" : $"Command failed";
     }
 
+    private async Task DebouncedSeekAsync(double percent)
+    {
+        // Debounce: while the user is scrubbing, later drag values supersede earlier
+        // ones. Only the most recent value that has "settled" for the debounce window
+        // actually triggers a seek request, avoiding a flood of server calls.
+        var generation = ++_seekRequestGeneration;
+        await Task.Delay(SeekDebounceMs);
+        if (generation != _seekRequestGeneration)
+        {
+            // A newer scrub value arrived; drop this stale request.
+            return;
+        }
+
+        await DoSeekAsync(percent);
+    }
+
+    private async Task DoSeekAsync(double percent)
+    {
+        if (_currentRunTimeTicks <= 0)
+        {
+            return;
+        }
+
+        _config.ServerUrl = ServerUrlText.Trim();
+        _config.ApiKey = ApiKeyText.Trim();
+        _config.UserId = UserIdText.Trim();
+        var sessionId = await EnsureActiveSessionIdAsync();
+        if (string.IsNullOrWhiteSpace(sessionId))
+        {
+            StatusText = "No active session";
+            return;
+        }
+
+        var ticks = (long)(Math.Clamp(percent, 0, 100) / 100.0 * _currentRunTimeTicks);
+        var ok = await _jellyfinService.SeekAsync(_config, sessionId, ticks);
+        if (ok)
+        {
+            StatusText = "Seeked";
+
+            // Re-seed local position tracking from the seek target so the ring,
+            // slider and extrapolated position reflect the new spot immediately
+            // instead of continuing from the stale pre-seek position.
+            _localPositionTicks = ticks;
+            _localRunTimeTicks = _currentRunTimeTicks;
+            _lastTickUtc = DateTime.UtcNow;
+            _isTrackingPlayback = _localRunTimeTicks > 0 && _localPositionTicks < _localRunTimeTicks;
+            _currentPositionTicks = _localPositionTicks;
+            SyncUiFromLocalPosition();
+        }
+        else
+        {
+            StatusText = "Seek failed";
+        }
+    }
+
     private async Task SetVolumeAsync(int volume, bool isMuted)
     {
         await Task.Run(() =>
@@ -769,9 +1109,50 @@ public class MainViewModel : INotifyPropertyChanged
         }
     }
 
+    /// <summary>
+    /// Refreshes the UI after a transport command (Next/Prev/PlayPause). The
+    /// previous fixed 300 ms sleep raced the target client: if the client hadn't
+    /// advanced yet, the fetch returned the OLD track and the cover/title stayed
+    /// stale until the next periodic revalidation. Instead, poll the cheap session
+    /// endpoint until the server actually reflects the command — bounded by
+    /// PostCommandRefreshTimeoutMs — and only then do the full refresh.
+    /// Signals checked: track changed, play state flipped, session disappeared,
+    /// or (for Prev's "restart current track" behavior) position jumped backwards.
+    /// </summary>
     private async Task RefreshAfterCommandAsync()
     {
-        await Task.Delay(300);
+        var previousItemId = _currentItemId;
+        var previousIsPaused = IsPaused;
+        var previousPositionTicks = _localPositionTicks;
+        var deadline = DateTime.UtcNow + TimeSpan.FromMilliseconds(PostCommandRefreshTimeoutMs);
+
+        while (DateTime.UtcNow < deadline)
+        {
+            await Task.Delay(PostCommandRefreshPollMs).ConfigureAwait(true);
+
+            var session = await PeekSessionSnapshotAsync().ConfigureAwait(true);
+            var serverItemId = session?.NowPlayingItem?.Id;
+            var serverIsPaused = session?.PlayState?.IsPaused;
+            var serverPositionTicks = session?.PlayState?.PositionTicks;
+
+            // Session gone (playback stopped), the target client switched songs,
+            // play state flipped, or (Prev restart case) position jumped back
+            // substantially -> the command took effect, do the full refresh.
+            if (session is null ||
+                serverIsPaused is null ||
+                (!string.IsNullOrWhiteSpace(serverItemId) &&
+                 !string.Equals(serverItemId, previousItemId, StringComparison.OrdinalIgnoreCase)) ||
+                (serverIsPaused.HasValue && serverIsPaused.Value != previousIsPaused) ||
+                // Prev on many Jellyfin clients restarts the current song instead of
+                // going to the previous item; that shows up as position rewinding,
+                // not as a new item. A >2 s backwards jump means "it happened".
+                (serverPositionTicks.HasValue && previousPositionTicks > 0 &&
+                 serverPositionTicks.Value < previousPositionTicks - TimeSpan.FromSeconds(2).Ticks))
+            {
+                break;
+            }
+        }
+
         await FetchNowPlayingAsync(isManualAction: true);
     }
 
@@ -785,6 +1166,8 @@ public class MainViewModel : INotifyPropertyChanged
         }
         catch { }
 
+        StartPlaybackTimer();
+
         try
         {
             var dbgPath2 = System.IO.Path.Combine(System.IO.Path.GetTempPath(), "RoundSoundMimic_startup_debug.log");
@@ -795,7 +1178,155 @@ public class MainViewModel : INotifyPropertyChanged
 
     public void OnClosed()
     {
-        // Audio capture and tray icon are handled by MainWindow
+        StopPlaybackTimer();
+    }
+
+    private void StartPlaybackTimer()
+    {
+        if (_playbackTimer is not null)
+        {
+            return;
+        }
+
+        _playbackTimer = new DispatcherTimer
+        {
+            Interval = TimeSpan.FromSeconds(1)
+        };
+        _playbackTimer.Tick += OnPlaybackTimerTick;
+        _playbackTimer.Start();
+    }
+
+    private void StopPlaybackTimer()
+    {
+        _playbackTimer?.Stop();
+        _playbackTimer = null;
+    }
+
+    /// <summary>
+    /// Lightweight, network-free tick. While a track is playing we extrapolate its
+    /// position locally from the wall clock. Only at a track boundary do we reach
+    /// out to the server (once) to pick up the next song or detect playback end.
+    /// When idle we fall back to a slow heartbeat to notice externally-started playback.
+    /// While playing we also periodically revalidate the server-reported item so the
+    /// UI matches reality if tracks change inside the Jellyfin client itself.
+    /// </summary>
+    private async void OnPlaybackTimerTick(object? sender, EventArgs e)
+    {
+        if (_isTrackingPlayback)
+        {
+            if (IsPaused)
+            {
+                // Keep the baseline fresh so we don't jump on resume.
+                _lastTickUtc = DateTime.UtcNow;
+                return;
+            }
+
+            var now = DateTime.UtcNow;
+            var elapsedSeconds = (now - _lastTickUtc).TotalSeconds;
+            _lastTickUtc = now;
+            if (elapsedSeconds > 0)
+            {
+                _localPositionTicks += (long)(elapsedSeconds * 10_000_000);
+            }
+
+            if (_localRunTimeTicks > 0 && _localPositionTicks >= _localRunTimeTicks)
+            {
+                // Track finished -> fetch once to advance to the next song. The
+                // client's own report of the switch lags this moment, so arm the
+                // quick retry loop: without it the single boundary fetch still
+                // returned the old song (or a null gap) and the next song's cover/
+                // title only appeared after the 30 s idle heartbeat kicked in.
+                _localPositionTicks = _localRunTimeTicks;
+                SyncUiFromLocalPosition();
+                _isTrackingPlayback = false;
+                ArmTrackTransitionRetry();
+                await FetchNowPlayingAsync();
+                return;
+            }
+
+            SyncUiFromLocalPosition();
+
+            // Periodic revalidation: if playback changed tracks inside the Jellyfin
+            // client (skip, playlist advance), the local extrapolation can't see it.
+            // A cheap session-metadata check keeps cover/title/artist matching.
+            if (now - _lastFetchUtc >= TimeSpan.FromSeconds(RevalidateIntervalSeconds))
+            {
+                await RevalidateNowPlayingAsync();
+            }
+
+            return;
+        }
+
+        // Playback has stopped or is between tracks. If a song just finished
+        // naturally, the server's report of the next track is imminent: fetch on the
+        // quick transition cadence so the new song's cover/title show up right away.
+        // Otherwise fall back to the slow heartbeat that picks up playback started
+        // outside this app.
+        if (_isAwaitingTrackTransition)
+        {
+            var sinceTransition = DateTime.UtcNow - _trackTransitionStartedUtc;
+            if (sinceTransition.TotalSeconds > TrackTransitionTimeoutSeconds)
+            {
+                // Never saw the next track within the timeout -> playback really
+                // ended (or the client stalled); revert to the slow heartbeat.
+                DisarmTrackTransitionRetry();
+            }
+            else if (DateTime.UtcNow - _lastFetchUtc >= TimeSpan.FromSeconds(TrackTransitionPollSeconds))
+            {
+                await FetchNowPlayingAsync();
+            }
+            return;
+        }
+
+        // Idle heartbeat: pick up playback started outside this app without a
+        // busy 1s poll. This is a cooling period (30s) rather than a constant poll.
+        if (DateTime.UtcNow - _lastFetchUtc >= TimeSpan.FromSeconds(IdlePollIntervalSeconds))
+        {
+            await FetchNowPlayingAsync();
+        }
+    }
+
+    /// <summary>
+    /// Marks that a song finished naturally and the server should report the next
+    /// track imminently; the timer fetches on the quick transition cadence until it
+    /// sees the new track, the timeout elapses, or playback resumes tracking.
+    /// </summary>
+    private void ArmTrackTransitionRetry()
+    {
+        if (_isAwaitingTrackTransition) return;
+        _isAwaitingTrackTransition = true;
+        _trackTransitionStartedUtc = DateTime.UtcNow;
+        // Remember which song triggered the wait so the retry is resolved exactly
+        // when the server starts reporting the NEXT one (not just any fetch).
+        _transitionFromItemId = _currentItemId;
+    }
+
+    private void DisarmTrackTransitionRetry()
+    {
+        _isAwaitingTrackTransition = false;
+        _trackTransitionStartedUtc = DateTime.MinValue;
+        _transitionFromItemId = null;
+    }
+
+    /// <summary>
+    /// Called from the fetch path: once the server reports an item that differs from
+    /// the one that was playing when the transition retry armed, the wait is over.
+    /// </summary>
+    private void ResolveTrackTransitionIfChanged(string? serverItemId)
+    {
+        if (!_isAwaitingTrackTransition) return;
+        if (!string.Equals(serverItemId, _transitionFromItemId, StringComparison.OrdinalIgnoreCase))
+        {
+            DisarmTrackTransitionRetry();
+        }
+    }
+
+    private void SyncUiFromLocalPosition()
+    {
+        _currentPositionTicks = _localPositionTicks;
+        Progress = _localRunTimeTicks > 0 ? Math.Clamp(_localPositionTicks / (double)_localRunTimeTicks, 0, 1) : 0;
+        UpdateProgressRing();
+        UpdateSeekFromPosition(_localPositionTicks, _localRunTimeTicks);
     }
 
     private static void TryLog(string tag, Exception ex)
