@@ -11,6 +11,15 @@ namespace RoundSoundMimic.Services
     {
         private static readonly HttpClient Http = new();
 
+        /// <summary>
+        /// Jellyfin 12+ requires an <c>Authorization</c> header carrying a MediaBrowser
+        /// authentication string (older releases accepted the <c>X-Emby-Token</c> header).
+        /// </summary>
+        private static string BuildAuthorizationHeader(AppConfig config)
+        {
+            return $"MediaBrowser Client=\"RoundSoundMimic\", Device=\"PC\", DeviceId=\"roundsound-mimic-device\", Version=\"1.0\", Token=\"{config.ApiKey}\"";
+        }
+
         public async Task<JellyfinSession?> FetchActiveSessionAsync(AppConfig config)
         {
             if (string.IsNullOrWhiteSpace(config.ServerUrl) || string.IsNullOrWhiteSpace(config.ApiKey))
@@ -22,7 +31,7 @@ namespace RoundSoundMimic.Services
             var url = $"{baseUrl}/Sessions?ActiveWithinSeconds=120";
 
             using var request = new HttpRequestMessage(HttpMethod.Get, url);
-            request.Headers.Add("X-Emby-Token", config.ApiKey);
+            request.Headers.Add("Authorization", BuildAuthorizationHeader(config));
 
             using var response = await Http.SendAsync(request).ConfigureAwait(false);
             if (!response.IsSuccessStatusCode)
@@ -66,7 +75,7 @@ namespace RoundSoundMimic.Services
                 try
                 {
                     using var request = new HttpRequestMessage(HttpMethod.Get, url);
-                    request.Headers.Add("X-Emby-Token", config.ApiKey);
+                    request.Headers.Add("Authorization", BuildAuthorizationHeader(config));
                     using var response = await Http.SendAsync(request).ConfigureAwait(false);
                     if (!response.IsSuccessStatusCode) continue;
                     return await response.Content.ReadAsByteArrayAsync().ConfigureAwait(false);
@@ -88,7 +97,7 @@ namespace RoundSoundMimic.Services
             var url = $"{baseUrl}/Sessions/{sessionId}/Playing/{command}";
 
             using var request = new HttpRequestMessage(HttpMethod.Post, url);
-            request.Headers.Add("X-Emby-Token", config.ApiKey);
+            request.Headers.Add("Authorization", BuildAuthorizationHeader(config));
 
             using var response = await Http.SendAsync(request).ConfigureAwait(false);
             return response.IsSuccessStatusCode;
@@ -106,7 +115,7 @@ namespace RoundSoundMimic.Services
             var content = new StringContent(json, System.Text.Encoding.UTF8, "application/json");
 
             using var request = new HttpRequestMessage(HttpMethod.Post, url);
-            request.Headers.Add("X-Emby-Token", config.ApiKey);
+            request.Headers.Add("Authorization", BuildAuthorizationHeader(config));
             request.Content = content;
 
             using var response = await Http.SendAsync(request).ConfigureAwait(false);
@@ -128,7 +137,7 @@ namespace RoundSoundMimic.Services
             }
 
             using var request = new HttpRequestMessage(HttpMethod.Get, url);
-            request.Headers.Add("X-Emby-Token", config.ApiKey);
+            request.Headers.Add("Authorization", BuildAuthorizationHeader(config));
 
             using var response = await Http.SendAsync(request).ConfigureAwait(false);
             if (!response.IsSuccessStatusCode)

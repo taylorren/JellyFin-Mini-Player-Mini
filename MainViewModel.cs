@@ -23,7 +23,7 @@ public class MainViewModel : INotifyPropertyChanged
 {
     private readonly RoundSoundMimic.Services.IJellyfinService _jellyfinService;
     private readonly RoundSoundMimic.Services.ITrayIconService _trayIconService;
-    private string? _lastArtworkKey;
+    private string? _lastNotifiedTrackKey;
     private AppConfig _config = new();
     private string? _activeSessionId;
     private long _currentRunTimeTicks;
@@ -482,7 +482,7 @@ public class MainViewModel : INotifyPropertyChanged
             _currentRunTimeTicks = nowPlaying.RunTimeTicks ?? 0;
             _currentPositionTicks = session?.PlayState?.PositionTicks ?? 0;
             var artworkKey = BuildArtworkKey(nowPlaying);
-            var showBalloon = !string.Equals(artworkKey, _lastArtworkKey, StringComparison.Ordinal);
+            var showBalloon = !string.Equals(artworkKey, _lastNotifiedTrackKey, StringComparison.Ordinal);
             await LoadAlbumArtAsync(_config, nowPlaying);
             if (!string.IsNullOrWhiteSpace(nowPlaying.Id))
             {
@@ -504,6 +504,7 @@ public class MainViewModel : INotifyPropertyChanged
             if (showBalloon)
             {
                 ShowTrayBalloon(title, artists);
+                _lastNotifiedTrackKey = artworkKey;
             }
             Progress = GetProgress(session);
             UpdateProgressRing();
@@ -577,7 +578,6 @@ public class MainViewModel : INotifyPropertyChanged
             image.Freeze();
             AlbumArtSource = image;
             UpdateTrayIcon(image);
-            _lastArtworkKey = BuildArtworkKey(item);
         }
         catch
         {
