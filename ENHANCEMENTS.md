@@ -57,8 +57,9 @@ by expected value vs. effort.
 
 ## Deployed already
 
-- Local position extrapolation (1 s tick, no network) with server fetch only at
-  track boundaries or manual actions; 30 s idle heartbeat.
+- 1-second session probe against the Jellyfin sessions endpoint (a LAN server
+  is cheap to query). The earlier network-free local position extrapolation was
+  reverted in favour of reading the position directly from the server.
 - Debounced seeks (350 ms) with stale-request dropping (generation counter).
 - Manual commands (Prev/PlayPause/Next) force an immediate fetch and bypass the
   6 s "waiting for update" grace window.

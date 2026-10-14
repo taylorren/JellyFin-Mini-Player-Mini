@@ -20,6 +20,8 @@ namespace RoundSoundMimic.Services
         private readonly double[] _logFreqMapping = new double[EqSpikeCount]; // Pre-calculated frequency mapping
         private int _fftPos;
         private WasapiLoopbackCapture? _capture;
+        private int _restartAttempts;
+        private const int MaxRestartAttempts = 3;
         private double[] _eqValues = Array.Empty<double>();
         private double[] _eqTargets = Array.Empty<double>();
         private double[] _eqSnapshot = new double[EqSpikeCount];
@@ -68,9 +70,11 @@ namespace RoundSoundMimic.Services
                 _capture.DataAvailable += OnAudioDataAvailable;
                 _capture.RecordingStopped += OnAudioRecordingStopped;
                 _capture.StartRecording();
+                _restartAttempts = 0;
             }
-            catch
+            catch (Exception ex)
             {
+                StartupLogger.Log("AudioProcessingService.StartCapture failed: " + ex.Message);
                 _capture = null;
             }
         }
@@ -151,6 +155,21 @@ namespace RoundSoundMimic.Services
             if (ReferenceEquals(_capture, capture))
             {
                 _capture = null;
+
+                // The output device changed, the stream faulted, or the endpoint
+                // was removed. Re-acquire so the visualizer keeps working instead
+                // of going silent for the rest of the session. Bounded so a
+                // permanently unavailable device cannot spin in a restart loop.
+                if (e.Exception is not null)
+                {
+                    StartupLogger.Log("AudioProcessingService: capture stopped: " + e.Exception.Message);
+                }
+
+                if (_restartAttempts < MaxRestartAttempts)
+                {
+                    _restartAttempts++;
+                    StartCapture();
+                }
             }
         }
 
@@ -243,47 +262,53 @@ namespace RoundSoundMimic.Services
 
         public void UpdateEqAnimation()
         {
+            double[] snapshot;
             lock (_eqLock)
             {
                 if (_eqTargets.Length == EqSpikeCount)
                 {
                     Array.Copy(_eqTargets, _eqSnapshot, EqSpikeCount);
                 }
-            }
 
-            // Enhanced physics-based animation: Fast rise, slow gravity-based fall
-            const double riseFactor = 0.6;   // Fast response to peaks
-            const double gravity = 0.005;   // Gravity constant for falling
-            const double drag = 0.92;       // Air resistance for falling spikes
+                // Enhanced physics-based animation: Fast rise, slow gravity-based fall
+                const double riseFactor = 0.6;   // Fast response to peaks
+                const double gravity = 0.005;   // Gravity constant for falling
+                const double drag = 0.92;       // Air resistance for falling spikes
 
-            for (var i = 0; i < _eqSnapshot.Length; i++)
-            {
-                var target = _eqSnapshot[i];
-                var current = _eqValues[i];
-
-                if (target > current)
+                for (var i = 0; i < _eqSnapshot.Length; i++)
                 {
-                    // Fast rise: linear interpolation towards target
-                    _eqValues[i] = current + (target - current) * riseFactor;
-                    _eqFallRates[i] = 0; // Reset fall rate when rising
-                }
-                else
-                {
-                    // Gravity fall: apply acceleration and velocity
-                    _eqFallRates[i] += gravity;
-                    _eqFallRates[i] *= drag;
-                    _eqValues[i] = Math.Max(0, current - _eqFallRates[i]);
-                    
-                    // Optional: add a tiny bit of random jitter for "organic" feel
-                    if (_eqValues[i] > 0.1)
+                    var target = _eqSnapshot[i];
+                    var current = _eqValues[i];
+
+                    if (target > current)
                     {
-                        var jitter = (Random.Shared.NextDouble() - 0.5) * 0.002;
-                        _eqValues[i] = Math.Clamp(_eqValues[i] + jitter, 0, 1);
+                        // Fast rise: linear interpolation towards target
+                        _eqValues[i] = current + (target - current) * riseFactor;
+                        _eqFallRates[i] = 0; // Reset fall rate when rising
+                    }
+                    else
+                    {
+                        // Gravity fall: apply acceleration and velocity
+                        _eqFallRates[i] += gravity;
+                        _eqFallRates[i] *= drag;
+                        _eqValues[i] = Math.Max(0, current - _eqFallRates[i]);
+
+                        // Add a tiny bit of random jitter for an organic feel.
+                        if (_eqValues[i] > 0.1)
+                        {
+                            var jitter = (Random.Shared.NextDouble() - 0.5) * 0.002;
+                            _eqValues[i] = Math.Clamp(_eqValues[i] + jitter, 0, 1);
+                        }
                     }
                 }
+
+                // Hand subscribers a copy so they can never observe (or mutate) the
+                // live array while the animation thread is updating it.
+                snapshot = new double[_eqValues.Length];
+                Array.Copy(_eqValues, snapshot, _eqValues.Length);
             }
 
-            EqValuesUpdated?.Invoke(_eqValues);
+            EqValuesUpdated?.Invoke(snapshot);
         }
     }
 }

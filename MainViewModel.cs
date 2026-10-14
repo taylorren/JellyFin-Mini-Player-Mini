@@ -24,6 +24,14 @@ public class MainViewModel : INotifyPropertyChanged
     private readonly RoundSoundMimic.Services.IJellyfinService _jellyfinService;
     private readonly RoundSoundMimic.Services.ITrayIconService _trayIconService;
     private string? _lastNotifiedTrackKey;
+    // Pending tray balloon. A track change schedules a balloon, but it is only
+    // shown once the track has settled for BalloonSettleMs, so rapid Next/Prev
+    // clicks collapse into a single notification for the track the user lands on.
+    private DispatcherTimer? _balloonTimer;
+    private string? _pendingBalloonKey;
+    private string _pendingBalloonTitle = string.Empty;
+    private string _pendingBalloonArtists = string.Empty;
+    private DateTime _lastBalloonShownUtc = DateTime.MinValue;
     private AppConfig _config = new();
     private string? _activeSessionId;
     private long _currentRunTimeTicks;
@@ -41,17 +49,14 @@ public class MainViewModel : INotifyPropertyChanged
     private string _statusText = "Idle";
     private double _progress = 0;
     private ImageSource? _albumArtSource;
-    private Geometry? _progressRingGeometry;
     private DoubleCollection? _progressDashArray;
     private string _progressToolTip = "No playback";
     private string _ringBackgroundToolTip = "No playback";
     private bool _isPlayPauseEnabled = true;
-    private bool _isPrevEnabled = true;
-    private bool _isNextEnabled = true;
     private bool _isPaused = false;
+    private bool _hasPlayback = false;
     private string _playCountText = "";
     private string _formatText = "";
-    private Brush? _formatBrush;
     private int _volume = 50;
     private int _volumeBeforeMute = 50;
     private bool _isMuted = false;
@@ -64,49 +69,26 @@ public class MainViewModel : INotifyPropertyChanged
     private DateTime _lastManualSeekUtc = DateTime.MinValue;
     private int _seekRequestGeneration = 0;
 
-    // Local playback-position tracking. While a track plays we avoid polling the
-    // server every second; instead a lightweight timer extrapolates the position
-    // from wall-clock time and only issues a network request at a track boundary
-    // (song finished) or when the user takes a manual action (Next/Prev/Seek).
+    // The playback timer drives a 1-second session probe. A LAN Jellyfin server is
+    // cheap to query, so position/progress are read directly from it instead of
+    // being extrapolated locally. _localRunTimeTicks/_localPositionTicks are kept
+    // only to re-seed tracking right after a seek or transport command.
     private DispatcherTimer? _playbackTimer;
-    private bool _isTrackingPlayback = false;
     private long _localRunTimeTicks = 0;
     private long _localPositionTicks = 0;
-    private DateTime _lastTickUtc = DateTime.MinValue;
-    private DateTime _lastFetchUtc = DateTime.MinValue;
-    // While set, the server is expected to report a track change imminently (a song
-    // just finished naturally); the timer fetches quickly instead of dropping to the
-    // slow idle heartbeat, so the next song's cover/title appear without delay.
-    private bool _isAwaitingTrackTransition;
-    private DateTime _trackTransitionStartedUtc = DateTime.MinValue;
-    // The item that was playing when the transition retry was armed; the retry is
-    // resolved once the server reports a different item (the next song).
-    private string? _transitionFromItemId;
 
-    /// <summary>Interval used for the idle heartbeat (nothing currently playing).</summary>
-    private const double IdlePollIntervalSeconds = 30;
     /// <summary>Debounce window for scrubbing the seek bar before sending a seek request.</summary>
     private const int SeekDebounceMs = 350;
-    /// <summary>
-    /// How often (while playing) the server session metadata is revalidated to make
-    /// sure the displayed cover/title/artist still match what is really playing.
-    /// </summary>
-    private const int RevalidateIntervalSeconds = 15;
 
     /// <summary>Poll cadence used after Next/Prev while waiting for the target client to switch songs.</summary>
     private const int PostCommandRefreshPollMs = 200;
     /// <summary>Upper bound for the post-command wait before falling back to a full refresh.</summary>
     private const int PostCommandRefreshTimeoutMs = 2000;
 
-    /// <summary>
-    /// Retry cadence while waiting for the server to report the next track after a
-    /// song finishes naturally. The client's own report of the switch lags the local
-    /// extrapolation by a moment, so the first boundary fetch usually still sees the
-    /// old track (or a transient null gap) and must be retried quickly.
-    /// </summary>
-    private const double TrackTransitionPollSeconds = 2;
-    /// <summary>How long the quick transition retry runs before reverting to the idle heartbeat.</summary>
-    private const double TrackTransitionTimeoutSeconds = 30;
+    /// <summary>How long a track must stay current before its tray balloon is shown.</summary>
+    private const int BalloonSettleMs = 1500;
+    /// <summary>Minimum spacing between tray balloons (guards against bursts).</summary>
+    private const int BalloonMinIntervalMs = 5000;
 
     public int Volume
     {
@@ -193,22 +175,6 @@ public class MainViewModel : INotifyPropertyChanged
         set => SetProperty(ref _formatText, value);
     }
 
-    public Brush? FormatBrush
-    {
-        get => _formatBrush;
-        set => SetProperty(ref _formatBrush, value);
-    }
-
-    private static bool IsLosslessFormat(string? format)
-    {
-        if (string.IsNullOrEmpty(format)) return false;
-        var losslessFormats = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
-        {
-            "FLAC", "WAV", "ALAC", "APE", "WV", "TAK", "TTA", "AIFF", "DSD", "DSF", "DFF"
-        };
-        return losslessFormats.Contains(format);
-    }
-
     public string TitleText
     {
         get => _titleText;
@@ -245,12 +211,6 @@ public class MainViewModel : INotifyPropertyChanged
         set => SetProperty(ref _albumArtSource, value);
     }
 
-    public Geometry? ProgressRingGeometry
-    {
-        get => _progressRingGeometry;
-        set => SetProperty(ref _progressRingGeometry, value);
-    }
-
     public DoubleCollection? ProgressDashArray
     {
         get => _progressDashArray;
@@ -275,55 +235,33 @@ public class MainViewModel : INotifyPropertyChanged
         set => SetProperty(ref _isPlayPauseEnabled, value);
     }
 
-    public bool IsPrevEnabled
-    {
-        get => _isPrevEnabled;
-        set => SetProperty(ref _isPrevEnabled, value);
-    }
-
-    public bool IsNextEnabled
-    {
-        get => _isNextEnabled;
-        set => SetProperty(ref _isNextEnabled, value);
-    }
-
     public bool IsPaused
     {
         get => _isPaused;
-        set => SetProperty(ref _isPaused, value);
-    }
-
-    // Helper to update the view element when using code-behind view
-    private void UpdateFormatTextBlock(string text)
-    {
-        // Try to update the view control if present (MainWindow uses code-behind)
-        try
+        set
         {
-            if (System.Windows.Application.Current?.MainWindow is MainWindow mw)
+            if (SetProperty(ref _isPaused, value))
             {
-                mw.Dispatcher.Invoke(() =>
-                {
-                    if (mw.FindName("FormatTextBlock") is TextBlock tb)
-                    {
-                        tb.Text = text;
-                    }
-                });
+                OnPropertyChanged(nameof(IsPlaying));
             }
         }
-        catch
+    }
+
+    /// <summary>True while a track is loaded (drives the idle state).</summary>
+    public bool HasPlayback
+    {
+        get => _hasPlayback;
+        set
         {
-            // ignore
+            if (SetProperty(ref _hasPlayback, value))
+            {
+                OnPropertyChanged(nameof(IsPlaying));
+            }
         }
     }
 
-    // PlayPause icon
-    private UIElement? _playPauseIcon;
-
-    public UIElement? PlayPauseIcon
-    {
-        get => _playPauseIcon;
-        set => SetProperty(ref _playPauseIcon, value);
-    }
+    /// <summary>True while a track is playing (loaded and not paused); drives the vinyl spin.</summary>
+    public bool IsPlaying => _hasPlayback && !_isPaused;
 
     // Config properties
     private string _serverUrlText = "";
@@ -484,8 +422,14 @@ public class MainViewModel : INotifyPropertyChanged
 
     public void MinimizeExecute()
     {
-        System.Windows.Application.Current.MainWindow.WindowState = WindowState.Minimized;
-        System.Windows.Application.Current.MainWindow.Hide();
+        var window = System.Windows.Application.Current?.MainWindow;
+        if (window is null)
+        {
+            return;
+        }
+
+        window.WindowState = WindowState.Minimized;
+        window.Hide();
     }
 
     public void ExitExecute()
@@ -554,7 +498,6 @@ public class MainViewModel : INotifyPropertyChanged
         }
 
         _isFetching = true;
-        _lastFetchUtc = DateTime.UtcNow;
         IsPlayPauseEnabled = false;
         StatusText = "Fetching...";
 
@@ -587,14 +530,10 @@ public class MainViewModel : INotifyPropertyChanged
 
             var session = await FetchActiveSessionAsync(_config);
             var nowPlaying = session?.NowPlayingItem;
-            // If a natural track-end retry is pending, resolve it once the server
-            // reports a different item than the one that was playing before.
-            ResolveTrackTransitionIfChanged(nowPlaying?.Id);
             _currentItemId = nowPlaying?.Id;
             _activeSessionId = session?.Id;
             IsPaused = session?.PlayState?.IsPaused ?? false;
             UpdateVolumeFromSession(session);
-            UpdatePlayPauseIcon();
 
             if (nowPlaying is null)
             {
@@ -610,6 +549,8 @@ public class MainViewModel : INotifyPropertyChanged
                 }
 
                 TitleText = "(no active playback)";
+                HasPlayback = false;
+                CancelPendingTrayBalloon();
                 ArtistText = string.Empty;
                 AlbumText = string.Empty;
                 AlbumArtSource = null;
@@ -619,7 +560,6 @@ public class MainViewModel : INotifyPropertyChanged
                 _currentPositionTicks = 0;
                 _localRunTimeTicks = 0;
                 _localPositionTicks = 0;
-                _isTrackingPlayback = false;
                 UpdateSeekFromPosition(0, 0);
                 Progress = 0;
                 UpdateTrayNowPlayingText("RoundSound Mimic", string.Empty);
@@ -642,22 +582,15 @@ public class MainViewModel : INotifyPropertyChanged
             ArtistText = artists.ToUpperInvariant();
             AlbumText = album;
             _lastPlaybackSeenUtc = DateTime.UtcNow;
+            HasPlayback = true;
             UpdateTrayNowPlayingText(title, artists);
             _currentRunTimeTicks = nowPlaying.RunTimeTicks ?? 0;
             _currentPositionTicks = session?.PlayState?.PositionTicks ?? 0;
-            // Re-arm local position tracking. Only track when there is remaining
-            // time on a known-duration item, so an already-finished/stalled item
-            // doesn't trigger a hot-loop of boundary fetches.
+            // Seed the local position used to re-seed tracking after a seek.
             _localRunTimeTicks = _currentRunTimeTicks;
             _localPositionTicks = Math.Min(_currentPositionTicks, Math.Max(0, _currentRunTimeTicks));
-            _isTrackingPlayback = _localRunTimeTicks > 0 && _localPositionTicks < _localRunTimeTicks;
-            if (_isTrackingPlayback)
-            {
-                _lastTickUtc = DateTime.UtcNow;
-            }
             _currentPositionTicks = _localPositionTicks;
             var artworkKey = BuildArtworkKey(nowPlaying);
-            var showBalloon = !string.Equals(artworkKey, _lastNotifiedTrackKey, StringComparison.Ordinal);
 
             // Artwork download and user-data (play count / favorite) are independent
             // of each other: run them concurrently instead of serially so the cover
@@ -690,11 +623,9 @@ public class MainViewModel : INotifyPropertyChanged
                 IsFavorite = false;
             }
             FormatText = nowPlaying.MediaStreams?.FirstOrDefault(s => s.Type == "Audio")?.Codec?.ToUpperInvariant() ?? nowPlaying.Container?.ToUpperInvariant() ?? "";
-            if (showBalloon)
-            {
-                ShowTrayBalloon(title, artists);
-                _lastNotifiedTrackKey = artworkKey;
-            }
+            // Announce the track only once it has settled so a burst of Next/Prev
+            // clicks (or session churn after a resume) cannot flood the tray.
+            ScheduleTrayBalloon(artworkKey, title, artists);
             Progress = GetProgress(session);
             UpdateProgressRing();
             UpdateSeekFromPosition(_currentPositionTicks, _currentRunTimeTicks);
@@ -703,6 +634,7 @@ public class MainViewModel : INotifyPropertyChanged
         catch (Exception ex)
         {
             TitleText = "(error)";
+            HasPlayback = false;
             ArtistText = string.Empty;
             AlbumText = string.Empty;
             PlayCountText = "";
@@ -713,67 +645,6 @@ public class MainViewModel : INotifyPropertyChanged
             Progress = 0;
             UpdateTrayNowPlayingText("RoundSound Mimic", string.Empty);
             StatusText = ex.Message;
-        }
-    }
-
-    /// <summary>
-    /// Cheap revalidation while a track plays: fetches session metadata only (no
-    /// artwork / user-data round trips) and checks whether the item the server
-    /// reports still matches what the UI is displaying. Playback can change tracks
-    /// inside the Jellyfin client itself; without this check the widget keeps
-    /// showing the previous song's cover, title and artist until its own local
-    /// extrapolation hits the track boundary. A changed item triggers a full
-    /// refresh; a matching item only corrects local position drift (e.g. after a
-    /// seek done in the client or system sleep).
-    /// </summary>
-    private async Task RevalidateNowPlayingAsync()
-    {
-        try
-        {
-            _config.ServerUrl = ServerUrlText.Trim();
-            _config.ApiKey = ApiKeyText.Trim();
-            _config.UserId = UserIdText.Trim();
-
-            var session = await FetchActiveSessionAsync(_config).ConfigureAwait(true);
-            var nowPlaying = session?.NowPlayingItem;
-            if (nowPlaying is null)
-            {
-                // Playback may have just ended externally; let the normal fetch
-                // path (with its grace window) clear the UI.
-                await FetchNowPlayingAsync();
-                return;
-            }
-
-            var serverItemId = nowPlaying.Id;
-            if (!string.IsNullOrWhiteSpace(serverItemId) &&
-                !string.Equals(serverItemId, _currentItemId, StringComparison.OrdinalIgnoreCase))
-            {
-                // The server is playing a different song than the UI shows -> full
-                // refresh so cover, title, artist, album, favorite etc. match.
-                await FetchNowPlayingAsync(isManualAction: true);
-                return;
-            }
-
-            // Same item: correct local position drift only. Skip while the user is
-            // scrubbing so the thumb doesn't fight them.
-            if (DateTime.UtcNow - _lastManualSeekUtc >= TimeSpan.FromSeconds(2))
-            {
-                _currentRunTimeTicks = nowPlaying.RunTimeTicks ?? _currentRunTimeTicks;
-                _localRunTimeTicks = _currentRunTimeTicks;
-                _localPositionTicks = Math.Min(session?.PlayState?.PositionTicks ?? _localPositionTicks,
-                    Math.Max(0, _localRunTimeTicks));
-                _currentPositionTicks = _localPositionTicks;
-                if (_localRunTimeTicks > 0)
-                {
-                    _isTrackingPlayback = _localPositionTicks < _localRunTimeTicks;
-                }
-                _lastTickUtc = DateTime.UtcNow;
-                SyncUiFromLocalPosition();
-            }
-        }
-        catch (Exception ex)
-        {
-            TryLog("RevalidateNowPlayingAsync", ex);
         }
     }
 
@@ -795,26 +666,6 @@ public class MainViewModel : INotifyPropertyChanged
         }
     }
 
-
-    private void UpdatePlayPauseIcon()
-    {
-        var iconKey = IsPaused ? "PlayIcon" : "PauseIcon";
-        if (System.Windows.Application.Current.TryFindResource(iconKey) is not Geometry geometry)
-        {
-            return;
-        }
-
-        PlayPauseIcon = new Viewbox
-        {
-            Width = 20,
-            Height = 20,
-            Child = new Path
-            {
-                Data = geometry,
-                Fill = System.Windows.Media.Brushes.White
-            }
-        };
-    }
 
     private Task<JellyfinSession?> FetchActiveSessionAsync(AppConfig config)
     {
@@ -947,6 +798,72 @@ public class MainViewModel : INotifyPropertyChanged
     }
 
     // Tray icon methods - delegate to service
+    /// <summary>
+    /// Queues a tray balloon for a newly-seen track. The balloon is only raised
+    /// after the track has stayed current for <see cref="BalloonSettleMs"/> ms so a
+    /// burst of Next/Prev clicks announces just the track the user settles on.
+    /// </summary>
+    private void ScheduleTrayBalloon(string artworkKey, string title, string artists)
+    {
+        if (string.Equals(artworkKey, _lastNotifiedTrackKey, StringComparison.Ordinal))
+        {
+            // Already announced this track.
+            return;
+        }
+
+        // A newer track supersedes any pending balloon.
+        _pendingBalloonKey = artworkKey;
+        _pendingBalloonTitle = title;
+        _pendingBalloonArtists = artists;
+
+        if (_balloonTimer is null)
+        {
+            _balloonTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(BalloonSettleMs) };
+            _balloonTimer.Tick += (_, _) => FlushTrayBalloon();
+        }
+
+        _balloonTimer.Stop();
+        _balloonTimer.Start();
+    }
+
+    private void CancelPendingTrayBalloon()
+    {
+        _pendingBalloonKey = null;
+        _balloonTimer?.Stop();
+    }
+
+    private void FlushTrayBalloon()
+    {
+        _balloonTimer?.Stop();
+
+        var key = _pendingBalloonKey;
+        if (key is null)
+        {
+            return;
+        }
+
+        var title = _pendingBalloonTitle;
+        var artists = _pendingBalloonArtists;
+        _pendingBalloonKey = null;
+
+        if (string.Equals(key, _lastNotifiedTrackKey, StringComparison.Ordinal))
+        {
+            return;
+        }
+
+        // Mark it seen either way so it is never announced later; only raise the
+        // balloon if enough time has passed since the previous one (this is what
+        // stops a post-sleep burst of track changes from stacking up toasts).
+        _lastNotifiedTrackKey = key;
+        if (DateTime.UtcNow - _lastBalloonShownUtc < TimeSpan.FromMilliseconds(BalloonMinIntervalMs))
+        {
+            return;
+        }
+
+        _lastBalloonShownUtc = DateTime.UtcNow;
+        ShowTrayBalloon(title, artists);
+    }
+
     private void UpdateTrayIcon(ImageSource source)
     {
         _trayIconService.UpdateTrayIcon(source);
@@ -1025,8 +942,6 @@ public class MainViewModel : INotifyPropertyChanged
             // instead of continuing from the stale pre-seek position.
             _localPositionTicks = ticks;
             _localRunTimeTicks = _currentRunTimeTicks;
-            _lastTickUtc = DateTime.UtcNow;
-            _isTrackingPlayback = _localRunTimeTicks > 0 && _localPositionTicks < _localRunTimeTicks;
             _currentPositionTicks = _localPositionTicks;
             SyncUiFromLocalPosition();
         }
@@ -1099,7 +1014,6 @@ public class MainViewModel : INotifyPropertyChanged
             var session = await FetchActiveSessionAsync(_config);
             _activeSessionId = session?.Id;
             IsPaused = session?.PlayState?.IsPaused ?? IsPaused;
-            UpdatePlayPauseIcon();
             return _activeSessionId;
         }
         catch (Exception ex)
@@ -1159,26 +1073,15 @@ public class MainViewModel : INotifyPropertyChanged
     // Methods to call from View
     public void OnLoaded()
     {
-        try
-        {
-            var dbgPath = System.IO.Path.Combine(System.IO.Path.GetTempPath(), "RoundSoundMimic_startup_debug.log");
-            System.IO.File.AppendAllText(dbgPath, DateTime.UtcNow.ToString("o") + " MainViewModel.OnLoaded: start\n");
-        }
-        catch { }
-
+        StartupLogger.Log("MainViewModel.OnLoaded: start");
         StartPlaybackTimer();
-
-        try
-        {
-            var dbgPath2 = System.IO.Path.Combine(System.IO.Path.GetTempPath(), "RoundSoundMimic_startup_debug.log");
-            System.IO.File.AppendAllText(dbgPath2, DateTime.UtcNow.ToString("o") + " MainViewModel.OnLoaded: complete\n");
-        }
-        catch { }
+        StartupLogger.Log("MainViewModel.OnLoaded: complete");
     }
 
     public void OnClosed()
     {
         StopPlaybackTimer();
+        _balloonTimer?.Stop();
     }
 
     private void StartPlaybackTimer()
@@ -1203,121 +1106,62 @@ public class MainViewModel : INotifyPropertyChanged
     }
 
     /// <summary>
-    /// Lightweight, network-free tick. While a track is playing we extrapolate its
-    /// position locally from the wall clock. Only at a track boundary do we reach
-    /// out to the server (once) to pick up the next song or detect playback end.
-    /// When idle we fall back to a slow heartbeat to notice externally-started playback.
-    /// While playing we also periodically revalidate the server-reported item so the
-    /// UI matches reality if tracks change inside the Jellyfin client itself.
+    /// Simple 1-second probe. Every tick we ask the server for the active session.
+    /// When the now-playing item changes (a song ended and the next one began, or
+    /// playback started/stopped) we run a full refresh so the cover, title, artist
+    /// and album update immediately. When the item is unchanged we only keep the
+    /// progress ring / seek bar in sync from the server-reported position.
     /// </summary>
     private async void OnPlaybackTimerTick(object? sender, EventArgs e)
     {
-        if (_isTrackingPlayback)
+        await ProbeNowPlayingAsync();
+    }
+
+    private async Task ProbeNowPlayingAsync()
+    {
+        if (_isFetching)
         {
-            if (IsPaused)
-            {
-                // Keep the baseline fresh so we don't jump on resume.
-                _lastTickUtc = DateTime.UtcNow;
-                return;
-            }
+            return;
+        }
 
-            var now = DateTime.UtcNow;
-            var elapsedSeconds = (now - _lastTickUtc).TotalSeconds;
-            _lastTickUtc = now;
-            if (elapsedSeconds > 0)
-            {
-                _localPositionTicks += (long)(elapsedSeconds * 10_000_000);
-            }
+        try
+        {
+            _config.ServerUrl = ServerUrlText.Trim();
+            _config.ApiKey = ApiKeyText.Trim();
+            _config.UserId = UserIdText.Trim();
 
-            if (_localRunTimeTicks > 0 && _localPositionTicks >= _localRunTimeTicks)
+            var session = await FetchActiveSessionAsync(_config).ConfigureAwait(true);
+            var nowPlaying = session?.NowPlayingItem;
+            var serverItemId = nowPlaying?.Id;
+
+            var itemChanged = !string.Equals(serverItemId, _currentItemId, StringComparison.OrdinalIgnoreCase);
+            var playbackStarted = nowPlaying is not null && _currentItemId is null;
+            var playbackEnded = nowPlaying is null && _currentItemId is not null;
+
+            // Full refresh when the track changed or playback started/stopped. This
+            // is what keeps the cover/title/artist in sync when a song finishes and
+            // the next one begins.
+            if (itemChanged || playbackStarted || playbackEnded)
             {
-                // Track finished -> fetch once to advance to the next song. The
-                // client's own report of the switch lags this moment, so arm the
-                // quick retry loop: without it the single boundary fetch still
-                // returned the old song (or a null gap) and the next song's cover/
-                // title only appeared after the 30 s idle heartbeat kicked in.
-                _localPositionTicks = _localRunTimeTicks;
-                SyncUiFromLocalPosition();
-                _isTrackingPlayback = false;
-                ArmTrackTransitionRetry();
                 await FetchNowPlayingAsync();
                 return;
             }
 
-            SyncUiFromLocalPosition();
-
-            // Periodic revalidation: if playback changed tracks inside the Jellyfin
-            // client (skip, playlist advance), the local extrapolation can't see it.
-            // A cheap session-metadata check keeps cover/title/artist matching.
-            if (now - _lastFetchUtc >= TimeSpan.FromSeconds(RevalidateIntervalSeconds))
+            // Same track still playing: sync progress/seek from the server-reported
+            // position without re-downloading artwork or user data.
+            if (nowPlaying is not null &&
+                DateTime.UtcNow - _lastManualSeekUtc >= TimeSpan.FromSeconds(2))
             {
-                await RevalidateNowPlayingAsync();
+                _currentRunTimeTicks = nowPlaying.RunTimeTicks ?? _currentRunTimeTicks;
+                _currentPositionTicks = session?.PlayState?.PositionTicks ?? 0;
+                Progress = GetProgress(session);
+                UpdateProgressRing();
+                UpdateSeekFromPosition(_currentPositionTicks, _currentRunTimeTicks);
             }
-
-            return;
         }
-
-        // Playback has stopped or is between tracks. If a song just finished
-        // naturally, the server's report of the next track is imminent: fetch on the
-        // quick transition cadence so the new song's cover/title show up right away.
-        // Otherwise fall back to the slow heartbeat that picks up playback started
-        // outside this app.
-        if (_isAwaitingTrackTransition)
+        catch (Exception ex)
         {
-            var sinceTransition = DateTime.UtcNow - _trackTransitionStartedUtc;
-            if (sinceTransition.TotalSeconds > TrackTransitionTimeoutSeconds)
-            {
-                // Never saw the next track within the timeout -> playback really
-                // ended (or the client stalled); revert to the slow heartbeat.
-                DisarmTrackTransitionRetry();
-            }
-            else if (DateTime.UtcNow - _lastFetchUtc >= TimeSpan.FromSeconds(TrackTransitionPollSeconds))
-            {
-                await FetchNowPlayingAsync();
-            }
-            return;
-        }
-
-        // Idle heartbeat: pick up playback started outside this app without a
-        // busy 1s poll. This is a cooling period (30s) rather than a constant poll.
-        if (DateTime.UtcNow - _lastFetchUtc >= TimeSpan.FromSeconds(IdlePollIntervalSeconds))
-        {
-            await FetchNowPlayingAsync();
-        }
-    }
-
-    /// <summary>
-    /// Marks that a song finished naturally and the server should report the next
-    /// track imminently; the timer fetches on the quick transition cadence until it
-    /// sees the new track, the timeout elapses, or playback resumes tracking.
-    /// </summary>
-    private void ArmTrackTransitionRetry()
-    {
-        if (_isAwaitingTrackTransition) return;
-        _isAwaitingTrackTransition = true;
-        _trackTransitionStartedUtc = DateTime.UtcNow;
-        // Remember which song triggered the wait so the retry is resolved exactly
-        // when the server starts reporting the NEXT one (not just any fetch).
-        _transitionFromItemId = _currentItemId;
-    }
-
-    private void DisarmTrackTransitionRetry()
-    {
-        _isAwaitingTrackTransition = false;
-        _trackTransitionStartedUtc = DateTime.MinValue;
-        _transitionFromItemId = null;
-    }
-
-    /// <summary>
-    /// Called from the fetch path: once the server reports an item that differs from
-    /// the one that was playing when the transition retry armed, the wait is over.
-    /// </summary>
-    private void ResolveTrackTransitionIfChanged(string? serverItemId)
-    {
-        if (!_isAwaitingTrackTransition) return;
-        if (!string.Equals(serverItemId, _transitionFromItemId, StringComparison.OrdinalIgnoreCase))
-        {
-            DisarmTrackTransitionRetry();
+            TryLog("ProbeNowPlayingAsync", ex);
         }
     }
 
@@ -1331,13 +1175,7 @@ public class MainViewModel : INotifyPropertyChanged
 
     private static void TryLog(string tag, Exception ex)
     {
-        try
-        {
-            var logPath = System.IO.Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "startup_debug.log");
-            var text = DateTime.UtcNow.ToString("o") + " " + tag + "\n" + ex + "\n\n";
-            System.IO.File.AppendAllText(logPath, text);
-        }
-        catch { }
+        StartupLogger.Log($"{tag}: {ex}");
     }
 
 

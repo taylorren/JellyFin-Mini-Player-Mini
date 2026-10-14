@@ -13,18 +13,27 @@ namespace RoundSoundMimic
             "FLAC", "WAV", "ALAC", "APE", "WV", "TAK", "TTA", "AIFF", "DSD", "DSF", "DFF"
         };
 
+        private static readonly SolidColorBrush LosslessBrush = CreateFrozen(Color.FromRgb(255, 215, 0));
+        private static readonly SolidColorBrush LossyBrush = CreateFrozen(Color.FromRgb(122, 127, 138));
+
+        private static SolidColorBrush CreateFrozen(Color color)
+        {
+            var brush = new SolidColorBrush(color);
+            brush.Freeze();
+            return brush;
+        }
+
         public object Convert(object value, Type targetType, object parameter, CultureInfo culture)
         {
             if (value is string format && !string.IsNullOrEmpty(format))
             {
                 if (LosslessFormats.Contains(format) || format.Contains("PCM", StringComparison.OrdinalIgnoreCase))
                 {
-                    // Shiny color for lossless
-                    return new SolidColorBrush(Color.FromRgb(255, 215, 0)); // Gold color
+                    return LosslessBrush;
                 }
             }
-            // Default muted color
-            return new SolidColorBrush(Color.FromRgb(122, 127, 138)); // MutedTextBrush color
+
+            return LossyBrush;
         }
 
         public object ConvertBack(object value, Type targetType, object parameter, CultureInfo culture)

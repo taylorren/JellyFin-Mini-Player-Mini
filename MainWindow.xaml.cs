@@ -35,6 +35,7 @@ public partial class MainWindow : Window
     private Popup? _menuPopup;
     private AppConfig _config = new();
     private DispatcherTimer? _eqTimer;
+    private System.Windows.Media.Animation.Storyboard? _vinylStoryboard;
 
     // Parameterless constructor for WPF XAML loader
     public MainWindow()
@@ -82,6 +83,14 @@ public partial class MainWindow : Window
             eqSpikeBrush,
             _audioService);
 
+        // The vinyl rotation is owned by code-behind so it can be paused whenever
+        // playback stops or is paused (see UpdateVinylSpin).
+        _vinylStoryboard = FindResource("AlbumArtRotationStoryboard") as System.Windows.Media.Animation.Storyboard;
+
+        if (_viewModel is not null)
+        {
+            _viewModel.PropertyChanged += OnViewModelPropertyChanged;
+        }
         if (_drawingCanvas is not null)
         {
             _drawingCanvas.Loaded += (_, _) => _visualizer?.OnCanvasLoaded();
@@ -126,7 +135,11 @@ public partial class MainWindow : Window
             _audioService.StartCapture();
             _eqTimer.Start();
             _viewModel.OnLoaded();
-            // UpdatePlayPauseIcon is now handled by the ViewModel
+
+            // The vinyl rotation is now driven from code-behind so it can be paused
+            // whenever playback stops or is paused.
+            _vinylStoryboard?.Begin(this, true);
+            UpdateVinylSpin();
         }
     }
 
@@ -134,36 +147,17 @@ public partial class MainWindow : Window
     {
         _trayService?.Dispose();
         _audioService?.StopCapture();
+        if (_viewModel is not null)
+        {
+            _viewModel.PropertyChanged -= OnViewModelPropertyChanged;
+        }
+
         _viewModel?.OnClosed();
         base.OnClosed(e);
     }
 
 
 
-    private async void SaveButton_OnClick(object sender, RoutedEventArgs e)
-    {
-        // This will now be handled by the ViewModel's SaveConfigCommand
-        if (_viewModel != null)
-        {
-            await _viewModel.SaveConfigAsync();
-        }
-    }
-
-    private async void FetchButton_OnClick(object sender, RoutedEventArgs e)
-    {
-        // This will now be handled by the ViewModel's FetchCommand
-        _viewModel?.FetchExecute();
-    }
-
-    private async void PrevButton_OnClick(object sender, RoutedEventArgs e)
-    {
-        _viewModel?.PrevExecute();
-    }
-
-    private async void PlayPauseButton_OnClick(object sender, RoutedEventArgs e)
-    {
-        _viewModel?.PlayPauseExecute();
-    }
 
     private void Window_OnMouseRightButtonUp(object sender, MouseButtonEventArgs e)
     {
@@ -235,16 +229,70 @@ public partial class MainWindow : Window
     }
 
 
-    private async void NextButton_OnClick(object sender, RoutedEventArgs e)
+
+
+
+
+
+
+    private void OnViewModelPropertyChanged(object? sender, System.ComponentModel.PropertyChangedEventArgs e)
     {
-        _viewModel?.NextExecute();
+        if (e.PropertyName == nameof(MainViewModel.IsPlaying))
+        {
+            UpdateVinylSpin();
+        }
     }
 
+    private void UpdateVinylSpin()
+    {
+        if (_vinylStoryboard is null)
+        {
+            return;
+        }
 
+        if (_viewModel?.IsPlaying == true)
+        {
+            _vinylStoryboard.Resume(this);
+        }
+        else
+        {
+            _vinylStoryboard.Pause(this);
+        }
+    }
 
+    private void Window_OnPreviewKeyDown(object sender, KeyEventArgs e)
+    {
+        if (_viewModel is null)
+        {
+            return;
+        }
 
+        // Never steal keys from the config popup (its text boxes need Space, etc.).
+        if (_configPopup?.IsOpen == true || Keyboard.FocusedElement is TextBoxBase)
+        {
+            return;
+        }
 
-
+        switch (e.Key)
+        {
+            case Key.Space:
+                _viewModel.PlayPauseExecute();
+                e.Handled = true;
+                break;
+            case Key.Left:
+                _viewModel.PrevExecute();
+                e.Handled = true;
+                break;
+            case Key.Right:
+                _viewModel.NextExecute();
+                e.Handled = true;
+                break;
+            case Key.F:
+                _viewModel.ToggleFavoriteExecute();
+                e.Handled = true;
+                break;
+        }
+    }
     private void CloseButton_OnClick(object sender, RoutedEventArgs e)
     {
         if (_configPopup is not null)

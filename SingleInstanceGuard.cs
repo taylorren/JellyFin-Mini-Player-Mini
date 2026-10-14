@@ -16,18 +16,13 @@ namespace RoundSoundMimic
         private static IntPtr _mutexHandle;
         private static bool _acquired;
 
-        // CreateMutexW returns a handle to the mutex. When the named mutex was
-        // already created and owned by another instance, it returns a valid
-        // handle but signals ERROR_ALREADY_EXISTS (183).
         [DllImport("kernel32.dll", SetLastError = true)]
         private static extern IntPtr CreateMutexW(IntPtr attributes, bool initialOwner, string name);
 
-        [DllImport("kernel32.dll")]
-        private static extern uint GetLastError();
+        [DllImport("kernel32.dll", SetLastError = true)]
+        private static extern bool CloseHandle(IntPtr handle);
 
-        /// <summary>
-        /// True once this process has claimed the single-instance mutex.
-        /// </summary>
+        /// <summary>True once this process has claimed the single-instance mutex.</summary>
         public static bool Acquired => _acquired;
 
         /// <summary>
@@ -46,18 +41,22 @@ namespace RoundSoundMimic
             _mutexHandle = CreateMutexW(IntPtr.Zero, true, InstanceMutexName);
             if (_mutexHandle == IntPtr.Zero)
             {
-                // Could not create the mutex; assume another instance is running to be safe.
                 StartupLogger.Log("SingleInstanceGuard: failed to create mutex, treating as already running.");
                 return false;
             }
 
-            _acquired = GetLastError() != 183u; // 183 = ERROR_ALREADY_EXISTS
-            if (!_acquired)
+            // 183 = ERROR_ALREADY_EXISTS. Marshal.GetLastWin32Error() reliably
+            // reads the error captured by the P/Invoke call above.
+            if (Marshal.GetLastWin32Error() == 183)
             {
+                CloseHandle(_mutexHandle);
+                _mutexHandle = IntPtr.Zero;
                 StartupLogger.Log("SingleInstanceGuard: another instance is already running.");
+                return false;
             }
 
-            return _acquired;
+            _acquired = true;
+            return true;
         }
     }
 }

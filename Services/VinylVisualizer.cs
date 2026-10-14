@@ -69,10 +69,6 @@ namespace RoundSoundMimic.Services
             UpdateEqGeometry();
         }
 
-        public void Update()
-        {
-            UpdateEqGeometry();
-        }
 
         public void InitializeEqSpikes()
         {

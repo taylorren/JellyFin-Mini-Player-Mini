@@ -32,7 +32,7 @@ RoundSoundMimic is built as a modern .NET WPF application targeting .NET 10.0, u
 - Playback state monitoring and control commands
 
 ### Performance Optimizations
-- Brush pooling system to reduce WPF rendering overhead
+- Frozen static brushes and cached geometry to avoid per-frame allocations
 - Efficient UI property change notifications
 - Background processing for non-blocking operations
 - Memory-conscious artwork management
@@ -46,6 +46,6 @@ RoundSoundMimic is built as a modern .NET WPF application targeting .NET 10.0, u
 ## Development Features
 
 - Automated build and launch for rapid development cycles
-- Comprehensive performance monitoring and testing utilities
+- Lightweight startup and error logging to a temp file for diagnostics
 - Modular service architecture for maintainability
 - Cross-thread communication using Dispatcher for UI safety
