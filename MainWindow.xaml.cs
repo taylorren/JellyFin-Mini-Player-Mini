@@ -35,7 +35,17 @@ public partial class MainWindow : Window
     private Popup? _menuPopup;
     private AppConfig _config = new();
     private DispatcherTimer? _eqTimer;
-    private System.Windows.Media.Animation.Storyboard? _vinylStoryboard;
+    private DispatcherTimer? _vinylTimer;
+
+    // The vinyl spin is advanced from code (rather than a XAML Storyboard) so it can
+    // be frozen exactly where it is whenever playback stops or pauses. A wall-clock
+    // Stopwatch is the time source so the rotation speed stays constant regardless of
+    // DispatcherTimer jitter.
+    private readonly System.Diagnostics.Stopwatch _vinylClock = System.Diagnostics.Stopwatch.StartNew();
+    private TimeSpan _lastVinylTick;
+    private double _vinylAngle;
+    private bool _vinylSpinning;
+    private const double VinylDegreesPerSecond = 360.0 / 15.0; // one revolution per 15 s
 
     // Parameterless constructor for WPF XAML loader
     public MainWindow()
@@ -83,9 +93,13 @@ public partial class MainWindow : Window
             eqSpikeBrush,
             _audioService);
 
-        // The vinyl rotation is owned by code-behind so it can be paused whenever
-        // playback stops or is paused (see UpdateVinylSpin).
-        _vinylStoryboard = FindResource("AlbumArtRotationStoryboard") as System.Windows.Media.Animation.Storyboard;
+        // The vinyl spin is advanced from code-behind so it can be frozen whenever
+        // playback stops or is paused (see UpdateVinylSpin / OnVinylTimerTick).
+        _vinylTimer = new DispatcherTimer
+        {
+            Interval = TimeSpan.FromMilliseconds(16) // ~60 FPS
+        };
+        _vinylTimer.Tick += OnVinylTimerTick;
 
         if (_viewModel is not null)
         {
@@ -136,9 +150,10 @@ public partial class MainWindow : Window
             _eqTimer.Start();
             _viewModel.OnLoaded();
 
-            // The vinyl rotation is now driven from code-behind so it can be paused
-            // whenever playback stops or is paused.
-            _vinylStoryboard?.Begin(this, true);
+            // Start the vinyl spin clock; the disc only advances while a track is
+            // actually playing (see UpdateVinylSpin / OnVinylTimerTick).
+            _lastVinylTick = _vinylClock.Elapsed;
+            _vinylTimer?.Start();
             UpdateVinylSpin();
         }
     }
@@ -147,6 +162,7 @@ public partial class MainWindow : Window
     {
         _trayService?.Dispose();
         _audioService?.StopCapture();
+        _vinylTimer?.Stop();
         if (_viewModel is not null)
         {
             _viewModel.PropertyChanged -= OnViewModelPropertyChanged;
@@ -243,21 +259,51 @@ public partial class MainWindow : Window
         }
     }
 
+    /// <summary>
+    /// Enables or freezes the vinyl spin to match playback. The current angle is kept
+    /// when the spin stops so the disc resumes from the same position instead of
+    /// snapping back to the top.
+    /// </summary>
     private void UpdateVinylSpin()
     {
-        if (_vinylStoryboard is null)
+        _vinylSpinning = _viewModel?.IsPlaying == true;
+
+        // Reset the delta baseline so the time spent paused is not applied to the
+        // angle in one jump when the spin resumes.
+        _lastVinylTick = _vinylClock.Elapsed;
+    }
+
+    /// <summary>
+    /// Advances the album-art / groove rotation by the time elapsed since the last
+    /// tick, but only while playback is running. The delta is clamped so a stalled UI
+    /// thread (artwork decode, system sleep) cannot make the cover visibly jump.
+    /// The play state is also re-read here as a safety net: the spin must never stay
+    /// frozen (or keep turning) just because a change notification was missed.
+    /// </summary>
+    private void OnVinylTimerTick(object? sender, EventArgs e)
+    {
+        var now = _vinylClock.Elapsed;
+        var delta = now - _lastVinylTick;
+        _lastVinylTick = now;
+
+        var isPlaying = _viewModel?.IsPlaying == true;
+        if (isPlaying != _vinylSpinning)
+        {
+            // State changed without a notification: adopt it and start from a fresh
+            // delta on the next tick so the missed interval is not applied at once.
+            _vinylSpinning = isPlaying;
+            return;
+        }
+
+        if (!_vinylSpinning || delta <= TimeSpan.Zero)
         {
             return;
         }
 
-        if (_viewModel?.IsPlaying == true)
-        {
-            _vinylStoryboard.Resume(this);
-        }
-        else
-        {
-            _vinylStoryboard.Pause(this);
-        }
+        var seconds = Math.Min(delta.TotalSeconds, 0.1);
+        _vinylAngle = (_vinylAngle + VinylDegreesPerSecond * seconds) % 360.0;
+        AlbumArtRotate.Angle = _vinylAngle;
+        VinylGrooveRotate.Angle = _vinylAngle;
     }
 
     private void Window_OnPreviewKeyDown(object sender, KeyEventArgs e)

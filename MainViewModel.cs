@@ -69,6 +69,12 @@ public class MainViewModel : INotifyPropertyChanged
     private DateTime _lastManualSeekUtc = DateTime.MinValue;
     private int _seekRequestGeneration = 0;
 
+    // Timestamp of the session snapshot that produced the current IsPaused value.
+    // The newest snapshot wins: a full refresh keeps working (artwork, user data) for
+    // a second or more after reading its snapshot, and a probe read in the meantime
+    // carries more current information about the play state.
+    private DateTime _lastPlayStateReadUtc = DateTime.MinValue;
+
     // The playback timer drives a 1-second session probe. A LAN Jellyfin server is
     // cheap to query, so position/progress are read directly from it instead of
     // being extrapolated locally. _localRunTimeTicks/_localPositionTicks are kept
@@ -80,10 +86,20 @@ public class MainViewModel : INotifyPropertyChanged
     /// <summary>Debounce window for scrubbing the seek bar before sending a seek request.</summary>
     private const int SeekDebounceMs = 350;
 
-    /// <summary>Poll cadence used after Next/Prev while waiting for the target client to switch songs.</summary>
+    /// <summary>
+    /// Poll cadence used after a transport command while waiting for the target client
+    /// to report the change. Only the (cheap) session endpoint is queried, and the
+    /// loop exits as soon as the change is visible, so this only costs requests when
+    /// the client is slow.
+    /// </summary>
     private const int PostCommandRefreshPollMs = 200;
-    /// <summary>Upper bound for the post-command wait before falling back to a full refresh.</summary>
-    private const int PostCommandRefreshTimeoutMs = 2000;
+    /// <summary>
+    /// Upper bound for the post-command wait before falling back to a full refresh.
+    /// A client can take several seconds to report the new track (loading the next
+    /// file, buffering), and giving up early handed the job to the 1-second probe,
+    /// which made "Next" feel slow by roughly the polling interval.
+    /// </summary>
+    private const int PostCommandRefreshTimeoutMs = 4000;
 
     /// <summary>How long a track must stay current before its tray balloon is shown.</summary>
     private const int BalloonSettleMs = 1500;
@@ -263,6 +279,25 @@ public class MainViewModel : INotifyPropertyChanged
     /// <summary>True while a track is playing (loaded and not paused); drives the vinyl spin.</summary>
     public bool IsPlaying => _hasPlayback && !_isPaused;
 
+    /// <summary>
+    /// Applies the paused flag carried by a session snapshot, but only when that
+    /// snapshot is newer than the one the current value came from. A full refresh
+    /// reads its snapshot and then spends time downloading artwork and user data; a
+    /// probe (or a later refresh) that read the session after it is more current, so
+    /// letting the older snapshot win would flip the icon back to Play and re-freeze
+    /// the vinyl. A snapshot without the flag leaves the value untouched.
+    /// </summary>
+    private void ApplyPlayState(bool? isPaused, DateTime snapshotUtc)
+    {
+        if (isPaused is not bool paused || snapshotUtc < _lastPlayStateReadUtc)
+        {
+            return;
+        }
+
+        _lastPlayStateReadUtc = snapshotUtc;
+        IsPaused = paused;
+    }
+
     // Config properties
     private string _serverUrlText = "";
     private string _apiKeyText = "";
@@ -336,19 +371,19 @@ public class MainViewModel : INotifyPropertyChanged
     public async void PrevExecute()
     {
         await SendPlaybackCommandAsync("PreviousTrack");
-        await RefreshAfterCommandAsync();
+        await RefreshAfterCommandAsync(expectPlayStateChange: false);
     }
 
     public async void PlayPauseExecute()
     {
         await SendPlaybackCommandAsync("PlayPause");
-        await RefreshAfterCommandAsync();
+        await RefreshAfterCommandAsync(expectPlayStateChange: true);
     }
 
     public async void NextExecute()
     {
         await SendPlaybackCommandAsync("NextTrack");
-        await RefreshAfterCommandAsync();
+        await RefreshAfterCommandAsync(expectPlayStateChange: false);
     }
 
     public void MuteExecute()
@@ -529,11 +564,16 @@ public class MainViewModel : INotifyPropertyChanged
             _config.UserId = UserIdText.Trim();
 
             var session = await FetchActiveSessionAsync(_config);
+            var sessionReadUtc = DateTime.UtcNow;
             var nowPlaying = session?.NowPlayingItem;
             _currentItemId = nowPlaying?.Id;
             _activeSessionId = session?.Id;
-            IsPaused = session?.PlayState?.IsPaused ?? false;
-            UpdateVolumeFromSession(session);
+            // Only take the play state the server actually reported, and only when
+            // this snapshot is the newest one we have seen. During a track-transition
+            // gap the session can be missing (the client sent PlaybackStopped but has
+            // not reported the next item yet); assuming "playing" there would flash
+            // the Pause icon and restart the vinyl spin in the middle of a pause.
+            ApplyPlayState(session?.PlayState?.IsPaused, sessionReadUtc);
 
             if (nowPlaying is null)
             {
@@ -550,6 +590,9 @@ public class MainViewModel : INotifyPropertyChanged
 
                 TitleText = "(no active playback)";
                 HasPlayback = false;
+                // Idle is not "paused": clear the flag so the icon does not stay
+                // on Play just because the last session happened to be paused.
+                IsPaused = false;
                 CancelPendingTrayBalloon();
                 ArtistText = string.Empty;
                 AlbumText = string.Empty;
@@ -591,6 +634,21 @@ public class MainViewModel : INotifyPropertyChanged
             _localPositionTicks = Math.Min(_currentPositionTicks, Math.Max(0, _currentRunTimeTicks));
             _currentPositionTicks = _localPositionTicks;
             var artworkKey = BuildArtworkKey(nowPlaying);
+            FormatText = nowPlaying.MediaStreams?.FirstOrDefault(s => s.Type == "Audio")?.Codec?.ToUpperInvariant() ?? nowPlaying.Container?.ToUpperInvariant() ?? "";
+
+            // Everything the transport UI needs is already in hand, so publish the
+            // ring, the seek bar and the play state BEFORE the artwork download and
+            // the user-data round trip. Those can take a second or more (server-side
+            // cover transcode, remote server) and gating the transport UI on them is
+            // what made "Next" feel unresponsive after the track had already switched.
+            Progress = GetProgress(session);
+            UpdateProgressRing();
+            UpdateSeekFromPosition(_currentPositionTicks, _currentRunTimeTicks);
+
+            // The system-volume read goes through NAudio/COM endpoint enumeration and
+            // only drives the volume slider, so it is started (never awaited) here,
+            // after the track state above.
+            UpdateVolumeFromSession(session);
 
             // Artwork download and user-data (play count / favorite) are independent
             // of each other: run them concurrently instead of serially so the cover
@@ -622,13 +680,9 @@ public class MainViewModel : INotifyPropertyChanged
                 PlayCountText = "";
                 IsFavorite = false;
             }
-            FormatText = nowPlaying.MediaStreams?.FirstOrDefault(s => s.Type == "Audio")?.Codec?.ToUpperInvariant() ?? nowPlaying.Container?.ToUpperInvariant() ?? "";
             // Announce the track only once it has settled so a burst of Next/Prev
             // clicks (or session churn after a resume) cannot flood the tray.
             ScheduleTrayBalloon(artworkKey, title, artists);
-            Progress = GetProgress(session);
-            UpdateProgressRing();
-            UpdateSeekFromPosition(_currentPositionTicks, _currentRunTimeTicks);
             StatusText = "Updated";
         }
         catch (Exception ex)
@@ -974,26 +1028,36 @@ public class MainViewModel : INotifyPropertyChanged
         });
     }
 
+    /// <summary>
+    /// Starts a refresh of the volume slider from the system volume. The read goes
+    /// through NAudio/COM endpoint enumeration, which can stall for hundreds of
+    /// milliseconds (and seconds on machines with a Bluetooth or disconnected
+    /// endpoint), so it runs on a worker thread and applies its result on the UI
+    /// thread. It never blocks the track/play-state pipeline.
+    /// </summary>
     internal void UpdateVolumeFromSession(JellyfinSession? session)
     {
-        // Update from system volume
+        _ = RefreshSystemVolumeAsync();
+    }
+
+    private async Task RefreshSystemVolumeAsync()
+    {
         try
         {
-            using var enumerator = new MMDeviceEnumerator();
-            var device = enumerator.GetDefaultAudioEndpoint(DataFlow.Render, Role.Multimedia);
-            if (device != null)
+            var (currentVolume, currentMuted) = await Task.Run(() =>
             {
+                using var enumerator = new MMDeviceEnumerator();
+                var device = enumerator.GetDefaultAudioEndpoint(DataFlow.Render, Role.Multimedia);
                 var volumeControl = device.AudioEndpointVolume;
-                var currentVolume = (int)(volumeControl.MasterVolumeLevelScalar * 100);
-                var currentMuted = volumeControl.Mute;
+                return ((int)(volumeControl.MasterVolumeLevelScalar * 100), volumeControl.Mute);
+            }).ConfigureAwait(true);
 
-                if (DateTime.UtcNow - _lastManualVolumeChangeUtc > TimeSpan.FromSeconds(2))
-                {
-                    _isUpdatingVolume = true;
-                    Volume = currentVolume;
-                    _isUpdatingVolume = false;
-                    IsMuted = currentMuted;
-                }
+            if (DateTime.UtcNow - _lastManualVolumeChangeUtc > TimeSpan.FromSeconds(2))
+            {
+                _isUpdatingVolume = true;
+                Volume = currentVolume;
+                _isUpdatingVolume = false;
+                IsMuted = currentMuted;
             }
         }
         catch (Exception ex)
@@ -1013,7 +1077,7 @@ public class MainViewModel : INotifyPropertyChanged
         {
             var session = await FetchActiveSessionAsync(_config);
             _activeSessionId = session?.Id;
-            IsPaused = session?.PlayState?.IsPaused ?? IsPaused;
+            ApplyPlayState(session?.PlayState?.IsPaused, DateTime.UtcNow);
             return _activeSessionId;
         }
         catch (Exception ex)
@@ -1024,50 +1088,76 @@ public class MainViewModel : INotifyPropertyChanged
     }
 
     /// <summary>
-    /// Refreshes the UI after a transport command (Next/Prev/PlayPause). The
-    /// previous fixed 300 ms sleep raced the target client: if the client hadn't
-    /// advanced yet, the fetch returned the OLD track and the cover/title stayed
-    /// stale until the next periodic revalidation. Instead, poll the cheap session
-    /// endpoint until the server actually reflects the command — bounded by
-    /// PostCommandRefreshTimeoutMs — and only then do the full refresh.
-    /// Signals checked: track changed, play state flipped, session disappeared,
-    /// or (for Prev's "restart current track" behavior) position jumped backwards.
+    /// Refreshes the UI after a transport command (Next/Prev/PlayPause). The previous
+    /// fixed 300 ms sleep raced the target client: if the client hadn't advanced yet,
+    /// the fetch returned the OLD track and the cover/title stayed stale until the
+    /// next periodic revalidation. Instead, poll the cheap session endpoint until the
+    /// server actually reflects the command — bounded by PostCommandRefreshTimeoutMs —
+    /// and only then do the full refresh. The first peek is immediate, so a client that
+    /// reports quickly is not delayed by a poll interval.
     /// </summary>
-    private async Task RefreshAfterCommandAsync()
+    /// <param name="expectPlayStateChange">
+    /// True for PlayPause, where a flipped paused flag is the evidence that the command
+    /// landed. For Next/Prev a flipped flag is not evidence: clients briefly report the
+    /// outgoing item as paused while they load the next file, and treating that as
+    /// "done" refreshed the OLD track and left the widget on it until the next probe.
+    /// </param>
+    private async Task RefreshAfterCommandAsync(bool expectPlayStateChange)
     {
         var previousItemId = _currentItemId;
         var previousIsPaused = IsPaused;
         var previousPositionTicks = _localPositionTicks;
-        var deadline = DateTime.UtcNow + TimeSpan.FromMilliseconds(PostCommandRefreshTimeoutMs);
+        var commandSentUtc = DateTime.UtcNow;
+        var deadline = commandSentUtc + TimeSpan.FromMilliseconds(PostCommandRefreshTimeoutMs);
+        var detectedUtc = DateTime.MinValue;
 
-        while (DateTime.UtcNow < deadline)
+        while (true)
         {
-            await Task.Delay(PostCommandRefreshPollMs).ConfigureAwait(true);
-
             var session = await PeekSessionSnapshotAsync().ConfigureAwait(true);
             var serverItemId = session?.NowPlayingItem?.Id;
             var serverIsPaused = session?.PlayState?.IsPaused;
             var serverPositionTicks = session?.PlayState?.PositionTicks;
 
-            // Session gone (playback stopped), the target client switched songs,
-            // play state flipped, or (Prev restart case) position jumped back
-            // substantially -> the command took effect, do the full refresh.
+            var itemChanged = !string.IsNullOrWhiteSpace(serverItemId) &&
+                              !string.Equals(serverItemId, previousItemId, StringComparison.OrdinalIgnoreCase);
+            var playStateFlipped = serverIsPaused.HasValue && serverIsPaused.Value != previousIsPaused;
+            // Prev on many Jellyfin clients restarts the current song instead of
+            // going to the previous item; that shows up as position rewinding,
+            // not as a new item. A >2 s backwards jump means "it happened".
+            var positionRewound = serverPositionTicks.HasValue && previousPositionTicks > 0 &&
+                                  serverPositionTicks.Value < previousPositionTicks - TimeSpan.FromSeconds(2).Ticks;
+
+            // Session gone (playback stopped), the target client switched songs, the
+            // play state flipped (PlayPause only), or the position jumped back -> the
+            // command took effect, so do the full refresh.
             if (session is null ||
                 serverIsPaused is null ||
-                (!string.IsNullOrWhiteSpace(serverItemId) &&
-                 !string.Equals(serverItemId, previousItemId, StringComparison.OrdinalIgnoreCase)) ||
-                (serverIsPaused.HasValue && serverIsPaused.Value != previousIsPaused) ||
-                // Prev on many Jellyfin clients restarts the current song instead of
-                // going to the previous item; that shows up as position rewinding,
-                // not as a new item. A >2 s backwards jump means "it happened".
-                (serverPositionTicks.HasValue && previousPositionTicks > 0 &&
-                 serverPositionTicks.Value < previousPositionTicks - TimeSpan.FromSeconds(2).Ticks))
+                itemChanged ||
+                positionRewound ||
+                (expectPlayStateChange && playStateFlipped))
+            {
+                detectedUtc = DateTime.UtcNow;
+                break;
+            }
+
+            if (DateTime.UtcNow >= deadline)
             {
                 break;
             }
+
+            await Task.Delay(PostCommandRefreshPollMs).ConfigureAwait(true);
         }
 
         await FetchNowPlayingAsync(isManualAction: true);
+
+        // One line per transport command: it separates "the client/server had not
+        // moved yet" from "we were slow", which is otherwise invisible in a bug report.
+        var detected = detectedUtc == DateTime.MinValue
+            ? "not seen (timeout)"
+            : $"{(detectedUtc - commandSentUtc).TotalMilliseconds:0} ms";
+        StartupLogger.Log(
+            $"Transport refresh: change detected after {detected}, UI refreshed after {(DateTime.UtcNow - commandSentUtc).TotalMilliseconds:0} ms " +
+            $"(item {previousItemId ?? "-"} -> {_currentItemId ?? "-"}, paused {previousIsPaused} -> {IsPaused})");
     }
 
     // Methods to call from View
@@ -1109,8 +1199,12 @@ public class MainViewModel : INotifyPropertyChanged
     /// Simple 1-second probe. Every tick we ask the server for the active session.
     /// When the now-playing item changes (a song ended and the next one began, or
     /// playback started/stopped) we run a full refresh so the cover, title, artist
-    /// and album update immediately. When the item is unchanged we only keep the
-    /// progress ring / seek bar in sync from the server-reported position.
+    /// and album update immediately. When the item is unchanged we keep the play
+    /// state, the progress ring and the seek bar in sync from the server-reported
+    /// position. The cheap part of the probe deliberately runs even while a full
+    /// refresh is in flight: that refresh can spend a second or more downloading
+    /// artwork, and the icon / vinyl spin / ring must not sit on stale values for
+    /// that whole time.
     /// </summary>
     private async void OnPlaybackTimerTick(object? sender, EventArgs e)
     {
@@ -1119,11 +1213,6 @@ public class MainViewModel : INotifyPropertyChanged
 
     private async Task ProbeNowPlayingAsync()
     {
-        if (_isFetching)
-        {
-            return;
-        }
-
         try
         {
             _config.ServerUrl = ServerUrlText.Trim();
@@ -1131,6 +1220,7 @@ public class MainViewModel : INotifyPropertyChanged
             _config.UserId = UserIdText.Trim();
 
             var session = await FetchActiveSessionAsync(_config).ConfigureAwait(true);
+            var sessionReadUtc = DateTime.UtcNow;
             var nowPlaying = session?.NowPlayingItem;
             var serverItemId = nowPlaying?.Id;
 
@@ -1140,23 +1230,34 @@ public class MainViewModel : INotifyPropertyChanged
 
             // Full refresh when the track changed or playback started/stopped. This
             // is what keeps the cover/title/artist in sync when a song finishes and
-            // the next one begins.
-            if (itemChanged || playbackStarted || playbackEnded)
+            // the next one begins. A refresh already in flight is left to finish (it
+            // covers the same change); starting a second one would only add load.
+            if ((itemChanged || playbackStarted || playbackEnded) && !_isFetching)
             {
                 await FetchNowPlayingAsync();
                 return;
             }
 
-            // Same track still playing: sync progress/seek from the server-reported
-            // position without re-downloading artwork or user data.
-            if (nowPlaying is not null &&
-                DateTime.UtcNow - _lastManualSeekUtc >= TimeSpan.FromSeconds(2))
+            if (nowPlaying is not null)
             {
-                _currentRunTimeTicks = nowPlaying.RunTimeTicks ?? _currentRunTimeTicks;
-                _currentPositionTicks = session?.PlayState?.PositionTicks ?? 0;
-                Progress = GetProgress(session);
-                UpdateProgressRing();
-                UpdateSeekFromPosition(_currentPositionTicks, _currentRunTimeTicks);
+                // The play state belongs to the session, not to one track, so it is
+                // applied even while a refresh for a new item is still downloading.
+                // Without this the icon and the vinyl spin could sit on a transient
+                // "paused" for the whole artwork download. The newest snapshot wins
+                // (see ApplyPlayState).
+                ApplyPlayState(session?.PlayState?.IsPaused, sessionReadUtc);
+
+                // Position/seek are only synced for the track the UI is already
+                // showing; otherwise the ring would jump to the new track before its
+                // cover and title arrive.
+                if (!itemChanged && DateTime.UtcNow - _lastManualSeekUtc >= TimeSpan.FromSeconds(2))
+                {
+                    _currentRunTimeTicks = nowPlaying.RunTimeTicks ?? _currentRunTimeTicks;
+                    _currentPositionTicks = session?.PlayState?.PositionTicks ?? 0;
+                    Progress = GetProgress(session);
+                    UpdateProgressRing();
+                    UpdateSeekFromPosition(_currentPositionTicks, _currentRunTimeTicks);
+                }
             }
         }
         catch (Exception ex)

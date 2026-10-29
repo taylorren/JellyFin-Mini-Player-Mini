@@ -44,6 +44,10 @@ by expected value vs. effort.
   let the user choose which session to control instead of taking the first.
 - **Transcoding awareness** — surface `TranscodeReasons` from `NowPlayingItem`
   as a small badge so users know why audio quality is reduced.
+- **Artwork cache keyed by `BuildArtworkKey`** — a repeated full refresh for the same
+  item (e.g. the manual fetch that is replayed after a refresh that was already in
+  flight) currently downloads and decodes the cover again; a keyed cache would make
+  the repeat free.
 
 ## Reliability / maintainability
 
@@ -65,3 +69,32 @@ by expected value vs. effort.
   6 s "waiting for update" grace window.
 - Seek re-seeds local tracking from the seek target so ring/slider stay in sync.
 - Vinyl/EQ rendering extracted from MainWindow into `Services/VinylVisualizer`.
+- Vinyl spin is advanced by a code-behind `DispatcherTimer` (a `Stopwatch` supplies
+  the delta) instead of a controllable `RepeatBehavior="Forever"` Storyboard, which
+  stopped looping after a `Pause`/`Resume` and left the cover frozen while music kept
+  playing. The angle freezes on pause and resumes from the same position.
+- The 1-second probe re-reads the play state (`PlayState.IsPaused`) alongside the
+  position. Previously the flag was only read by a full refresh, so the value latched
+  by the refresh that follows a `NextTrack` command — taken in the window before the
+  client reports the new item as playing — stuck until the item changed again, leaving
+  the Play/Pause icon on Play and the vinyl frozen while the progress bar kept moving.
+  A missing session no longer forces "playing", and the spin timer re-reads
+  `IsPlaying` as a safety net against a missed notification.
+- The transport UI is published straight from the session snapshot, before the
+  artwork download and the user-data round trip: the ring, seek bar, icon and vinyl
+  spin update as soon as the server reports the new track instead of after the cover
+  arrives (measured with a simulated 800 ms cover download: ring at 0.5 ms instead
+  of ~810 ms).
+- The 1-second probe no longer returns early while a full refresh is in flight, so
+  the play state keeps converging during a slow cover download. Session snapshots are
+  timestamped and an older one can no longer overwrite the value a newer one applied
+  (a full refresh keeps working for a second or more after reading its snapshot).
+- The post-command refresh peeks immediately, waits up to 4 s for the client to
+  report the change, and only treats a flipped paused flag as "the command landed"
+  for PlayPause. For Next/Prev a flip is not evidence — clients briefly report the
+  outgoing track as paused while loading the next one — and treating it as such made
+  the widget refresh the OLD track and then wait for the next probe. Each transport
+  command now logs its detect/refresh timings to the debug log so a slow catch-up can
+  be attributed to the client or to us.
+- The system-volume read (NAudio/COM endpoint enumeration) runs on a worker thread
+  and no longer blocks the UI thread at the top of every full refresh.

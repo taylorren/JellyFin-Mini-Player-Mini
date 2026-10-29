@@ -155,18 +155,6 @@
         </Style>
         <local:VolumeWidthConverter x:Key="VolumeWidthConverter" />
         <local:VolumeToIconConverter x:Key="VolumeToIconConverter" />
-        <Storyboard x:Key="AlbumArtRotationStoryboard" RepeatBehavior="Forever" Timeline.DesiredFrameRate="60">
-            <DoubleAnimation Storyboard.TargetName="AlbumArtRotate"
-                             Storyboard.TargetProperty="Angle"
-                             From="0"
-                             To="360"
-                             Duration="0:0:15" />
-            <DoubleAnimation Storyboard.TargetName="VinylGrooveRotate"
-                             Storyboard.TargetProperty="Angle"
-                             From="0"
-                             To="360"
-                             Duration="0:0:15" />
-        </Storyboard>
     </Window.Resources>
 
 
